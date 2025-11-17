@@ -1,9 +1,7 @@
 # 1. Usar una imagen oficial de Node.js
-# Usamos 'slim' para que sea más ligera, pero '18' es compatible con tu stack.
 FROM node:18-slim
 
 # 2. Instalar las dependencias que Puppeteer (whatsapp-web.js) necesita
-# Esta es la "magia" que hace que funcione en un servidor
 RUN apt-get update && apt-get install -y \
     gconf-service \
     libasound2 \
@@ -12,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libcups2 \
     libdbus-1-3 \
-    libdrm2 \         # <-- Esta es la librería que faltaba para el último error
+    libdrm2 \
     libexpat1 \
     libfontconfig1 \
     libgcc1 \
@@ -50,7 +48,6 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # 4. Copiar e instalar dependencias de Node
-# Esto aprovecha el caché de Docker
 COPY package*.json ./
 RUN npm install
 
