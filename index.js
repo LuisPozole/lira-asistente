@@ -5,6 +5,9 @@ const express = require('express');
 const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const cors = require('cors');
+app.get('/', (req, res) => {
+    res.status(200).send('¡Bot vivo y escuchando! 👋');
+});
 const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
