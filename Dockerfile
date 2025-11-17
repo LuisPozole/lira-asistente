@@ -1,0 +1,60 @@
+# 1. Usar una imagen oficial de Node.js
+# Usamos 'slim' para que sea más ligera, pero '18' es compatible con tu stack.
+FROM node:18-slim
+
+# 2. Instalar las dependencias que Puppeteer (whatsapp-web.js) necesita
+# Esta es la "magia" que hace que funcione en un servidor
+RUN apt-get update && apt-get install -y \
+    gconf-service \
+    libasound2 \
+    libatk1.0-0 \
+    libc6 \
+    libcairo2 \
+    libcups2 \
+    libdbus-1-3 \
+    libexpat1 \
+    libfontconfig1 \
+    libgcc1 \
+    libgconf-2-4 \
+    libgdk-pixbuf2.0-0 \
+    libglib2.0-0 \
+    libgtk-3-0 \
+    libnspr4 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libstdc++6 \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    ca-certificates \
+    fonts-liberation \
+    libappindicator1 \
+    libnss3 \
+    lsb-release \
+    xdg-utils \
+    wget \
+    --no-install-recommends
+
+# 3. Preparar el directorio de la app
+WORKDIR /app
+
+# 4. Copiar e instalar dependencias de Node
+# Esto aprovecha el caché de Docker
+COPY package*.json ./
+RUN npm install
+
+# 5. Copiar el resto del código de tu app
+COPY . .
+
+# 6. Comando para iniciar tu bot
+CMD ["node", "index.js"]

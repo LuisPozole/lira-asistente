@@ -1,0 +1,8 @@
+# Archivo de secretos
+.env
+
+# Dependencias
+node_modules/
+
+# Caché de autenticación local
+.wwebjs_auth/
