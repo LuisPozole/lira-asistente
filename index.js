@@ -603,44 +603,44 @@ client.on('message', async msg => {
         const historyForRouter = getHistory(numeroCompleto);
         
         const routerPromptText = `
-            Eres un clasificador de intenciones. Analiza el "MENSAJE NUEVO".
-            Responde SÓLO con un objeto JSON.
-            
-            Intenciones:
-            - "LISTA_AGREGAR", "LISTA_VER", "LISTA_BORRAR_ITEM", "LISTA_ELIMINAR", "LISTAS_VER_TODAS"
-            - "RECUERDA_CREAR"
-            - "RECUERDA_VER" 
-            - "RECUERDA_ELIMINAR" 
-            - "BORRAR_MEMORIA"
-            - "CHAT"
-            
-            Ejemplos:
-            "añade leche al super" -> {"intent": "LISTA_AGREGAR", "nombreLista": "super", "item": "leche"}
-            
-            // Ejemplos de Recordatorios
-            "recuérdame que mañana tengo cita a las 10am" -> {"intent": "RECUERDA_CREAR", "que": "tengo cita", "cuando": "mañana a las 10am"}
-Â           "recuérdame tomar mis pastillas todos los dias a las 8 am y las 8 pm" -> {"intent": "RECUERDA_CREAR", "que": "tomar mis pastillas", "cuando": "todos los dias a las 8 am y las 8 pm"}
-            
-            // --- NUEVOS EJEMPLOS ---
-            "¿qué recordatorios tengo?" -> {"intent": "RECUERDA_VER"}
-            "enséñame mis pendientes" -> {"intent": "RECUERDA_VER"}
-            "cancela el recordatorio de las pastillas" -> {"intent": "RECUERDA_ELIMINAR", "que": "pastillas"}
-            "borra el recordatorio de la junta" -> {"intent": "RECUERDA_ELIMINAR", "que": "junta"}
-            "borra todos mis recordatorios" -> {"intent": "RECUERDA_ELIMINAR", "que": "todos"}
-            
-            "olvida lo que hablamos" -> {"intent": "BORRAR_MEMORIA"}
-            "hola" -> {"intent": "CHAT"}
+          Eres un clasificador de intenciones. Analiza el "MENSAJE NUEVO".
+          Responde SÓLO con un objeto JSON.
+          
+          Intenciones:
+          - "LISTA_AGREGAR", "LISTA_VER", "LISTA_BORRAR_ITEM", "LISTA_ELIMINAR", "LISTAS_VER_TODAS"
+          - "RECUERDA_CREAR"
+          - "RECUERDA_VER" 
+          - "RECUERDA_ELIMINAR" 
+          - "BORRAR_MEMORIA"
+          - "CHAT"
+          
+          Ejemplos:
+          "añade leche al super" -> {"intent": "LISTA_AGREGAR", "nombreLista": "super", "item": "leche"}
+          
+          // Ejemplos de Recordatorios
+          "recuérdame que mañana tengo cita a las 10am" -> {"intent": "RECUERDA_CREAR", "que": "tengo cita", "cuando": "mañana a las 10am"}
+Â 			 		 "recuérdame tomar mis pastillas todos los dias a las 8 am y las 8 pm" -> {"intent": "RECUERDA_CREAR", "que": "tomar mis pastillas", "cuando": "todos los dias a las 8 am y las 8 pm"}
+          
+          // --- NUEVOS EJEMPLOS ---
+          "¿qué recordatorios tengo?" -> {"intent": "RECUERDA_VER"}
+          "enséñame mis pendientes" -> {"intent": "RECUERDA_VER"}
+          "cancela el recordatorio de las pastillas" -> {"intent": "RECUERDA_ELIMINAR", "que": "pastillas"}
+          "borra el recordatorio de la junta" -> {"intent": "RECUERDA_ELIMINAR", "que": "junta"}
+          "borra todos mis recordatorios" -> {"intent": "RECUERDA_ELIMINAR", "que": "todos"}
+          
+          "olvida lo que hablamos" -> {"intent": "BORRAR_MEMORIA"}
+          "hola" -> {"intent": "CHAT"}
 
-            nota: considera eufemismos como "medio dia" (12 pm)
+          nota: considera eufemismos como "medio dia" (12 pm)
 
-            ---
-            HISTORIAL DE CONTEXTO (para ayudarte a entender el mensaje nuevo):
-            ${historyForRouter.slice(0, -1).map(h => `${h.role}: ${h.parts[0].text}`).join('\n')}
-            ---
-            MENSAJE NUEVO:
-            "${userMessageText}"
-            ---
-            JSON:
+          ---
+          HISTORIAL DE CONTEXTO (para ayudarte a entender el mensaje nuevo):
+          ${historyForRouter.slice(0, -1).map(h => `${h.role}: ${h.parts[0].text}`).join('\n')}
+          ---
+          MENSAJE NUEVO:
+          "${userMessageText}"
+          ---
+          JSON:
         `;
 
         // 4. Llamar al Router de Gemini (modelo genérico)
@@ -704,7 +704,9 @@ client.on('message', async msg => {
             // Ahora usa 'RecordatorioModel' que es dinámico
             case "RECUERDA_CREAR":
                 const que = action.que;
-                const cuando = action.cuando;
+                
+                // --- INICIO DE CORRECCIÓN: Lógica de Zona Horaria ---
+                let cuando = action.cuando; // Se convierte a 'let'
                 
                 if (!que || !cuando) {
                     responseText = "No entendí bien tu recordatorio. Necesito saber *qué* quieres que te recuerde y *cuándo*.";
@@ -713,17 +715,34 @@ client.on('message', async msg => {
                     break;
                 }
 
+                // Definimos la zona horaria del usuario (America/Mexico_City es UTC-6 permanente)
+                const userTimezoneOffset = " (UTC-6)";
+                
+                // Comprobamos si el usuario ya especificó una zona horaria (ej. "UTC", "GMT", "CST", "EDT")
+                // Esta es una comprobación simple
+                const hasTimezone = /UTC|GMT|([A-Z]{2,3}T)/i.test(cuando);
+
+                if (!hasTimezone) {
+                    console.log(`Añadiendo offset UTC-6 a la fecha: "${cuando}"`);
+                    cuando += userTimezoneOffset; // Añadimos el offset para que chrono lo parsee correctamente
+                }
+                // --- FIN DE CORRECCIÓN ---
+
+
+                // El 'new Date()' de referencia sigue siendo el del servidor (UTC),
+                // pero ahora 'cuando' tiene el contexto de la zona horaria (UTC-6).
                 const fechaParseada = chrono.es.parse(cuando, new Date(), { forwardDate: true });
                 
                 if (!fechaParseada || fechaParseada.length === 0) {
-                    responseText = `No entendí la fecha para tu recordatorio: "${cuando}". ¿Podrías ser más específica?`;
+                    // (La variable 'cuando' aquí ya tendría el " (UTC-6)" si se añadió)
+                    responseText = `No entendí la fecha para tu recordatorio: "${action.cuando}". ¿Podrías ser más específica?`;
                 } else {
-                    const isRecurring = /todos los dias|cada dia|diario|cada (lunes|martes|miércoles|jueves|viernes|sábado|domingo)|semanalmente|cada semana/i.test(cuando);
+                    const isRecurring = /todos los dias|cada dia|diario|cada (lunes|martes|miércoles|jueves|viernes|sábado|domingo)|semanalmente|cada semana/i.test(action.cuando); // Usamos el 'cuando' original para la recurrencia
                     
                     let responses = [];
                     
                     for (const result of fechaParseada) {
-                        const fecha = result.start.date();
+                        const fecha = result.start.date(); // Esto AHORA será la hora UTC correcta (ej. 12pm CST -> 18:00 UTC)
                         const reglaTexto = result.text; 
 
                         await RecordatorioModel.create({
@@ -735,7 +754,7 @@ client.on('message', async msg => {
                             recurrenceRuleText: isRecurring ? reglaTexto : null 
                         });
                         
-                        responses.push(`"${que}" el ${fecha.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}`);
+                        responses.push(`"${que}" el ${fecha.toLocaleString('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'medium', timeStyle: 'short' })}`);
                     }
                     
                     if (responses.length > 1) {
@@ -745,7 +764,7 @@ client.on('message', async msg => {
                     }
                     
                     if (isRecurring) {
-                        responseText += `\n(Lo programaré recurrentemente 😉)`;
+                        responseText += `\n(Lo programaré recurrentemente ^^)`;
                     }
                 }
                 await client.sendMessage(msg.from, responseText);
@@ -757,10 +776,12 @@ client.on('message', async msg => {
                 const pendientes = await RecordatorioModel.find({ numero: msg.from, enviado: false }).sort({ fecha: 1 });
                 
                 if (pendientes.length === 0) {
-                    responseText = "No tienes ningún recordatorio pendiente. 😉";
+                    responseText = "No tienes ningún recordatorio pendiente. ^^";
                 } else {
                     const listaRecordatorios = pendientes.map((r, i) => {
-                        let linea = `${i + 1}. "${r.texto}"\n    └─ ${r.fecha.toLocaleString('es-MX', { dateStyle: 'full', timeStyle: 'short' })}`;
+                        // Mostramos la fecha en la zona horaria correcta
+                        const fechaLocal = r.fecha.toLocaleString('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'full', timeStyle: 'short' });
+                        let linea = `${i + 1}. "${r.texto}"\n    └─ ${fechaLocal}`;
                         if (r.isRecurring) {
                             linea += " (recurrente)";
                         }
