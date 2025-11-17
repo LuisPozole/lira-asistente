@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libcups2 \
     libdbus-1-3 \
+    libdrm2 \         # <-- Esta es la librería que faltaba para el último error
     libexpat1 \
     libfontconfig1 \
     libgcc1 \
