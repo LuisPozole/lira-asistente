@@ -300,6 +300,62 @@ function cleanGeminiJson(rawText) {
     }
 }
 
+// --- NUEVO: Funciones de Reintento con Backoff ---
+
+// Función básica para esperar (delay)
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Wrapper para model.generateContent con reintentos.
+ */
+async function generateContentWithRetry(model, request, maxRetries = 3, currentAttempt = 1) {
+    try {
+        // El 'request' puede ser un string (para el router) o un objeto (para audio/imagen)
+        return await model.generateContent(request); 
+    } catch (error) {
+        // Comprobar si es el error 503 o de sobrecarga
+        if (error.message && (error.message.includes('503') || error.message.includes('overloaded'))) {
+            if (currentAttempt < maxRetries) {
+                // Cálculo de backoff exponencial (ej. 2s, 4s, 8s)
+                const waitTime = Math.pow(2, currentAttempt) * 1000;
+                console.warn(`⚠️ Modelo sobrecargado (503). Reintento ${currentAttempt}/${maxRetries} en ${waitTime}ms...`);
+                await delay(waitTime);
+                return await generateContentWithRetry(model, request, maxRetries, currentAttempt + 1);
+            } else {
+                console.error(`❌ Modelo sobrecargado. Se alcanzó el máximo de ${maxRetries} reintentos.`);
+                throw error; // Lanza el error después de los reintentos
+            }
+        } else {
+            // No es un error 503, lanzarlo inmediatamente
+            throw error;
+        }
+    }
+}
+
+/**
+ * Wrapper para chat.sendMessage con reintentos.
+ */
+async function sendChatWithRetry(chat, message, maxRetries = 3, currentAttempt = 1) {
+    try {
+        return await chat.sendMessage(message); 
+    } catch (error) {
+        if (error.message && (error.message.includes('503') || error.message.includes('overloaded'))) {
+            if (currentAttempt < maxRetries) {
+                const waitTime = Math.pow(2, currentAttempt) * 1000;
+                console.warn(`⚠️ Modelo sobrecargado (503). Reintento ${currentAttempt}/${maxRetries} en ${waitTime}ms...`);
+                await delay(waitTime);
+                return await sendChatWithRetry(chat, message, maxRetries, currentAttempt + 1);
+            } else {
+                console.error(`❌ Modelo sobrecargado. Se alcanzó el máximo de ${maxRetries} reintentos.`);
+                throw error;
+            }
+        } else {
+            throw error;
+        }
+    }
+}
+
+
 // --- TAREAS DE FONDO (TICKER) ---
 
 // --- 1. Check de Recordatorios (MODIFICADO) ---
@@ -387,7 +443,8 @@ async function generateProactiveMessage() {
         Sé creativa y natural, como Lira.
         Tu respuesta:
     `;
-    const result = await model.generateContent(prompt);
+    // USAREMOS EL WRAPPER AQUÍ TAMBIÉN POR SI ACASO
+    const result = await generateContentWithRetry(model, prompt);
     return result.response.text();
 }
 
@@ -504,7 +561,8 @@ client.on('message', async msg => {
             console.log(`💬 Enviando a ${userName} (imagen)...`);
             
             // Usamos el modelo genérico para visión
-            const result = await model.generateContent({ contents: [{ parts: imagePayload }] });
+            // --- APLICANDO REINTENTO ---
+            const result = await generateContentWithRetry(model, { contents: [{ parts: imagePayload }] });
             const chatText = result.response.text();
             
             console.log(`🤖 Respuesta de ${userName} (imagen): ${chatText}`);
@@ -527,7 +585,8 @@ client.on('message', async msg => {
             const transcodeRequest = [{ text: "Transcribe el siguiente audio a texto:" }, ...audioParts];
             
             // Usamos el modelo genérico para transcripción
-            const transcodeResult = await model.generateContent({ contents: [{ parts: transcodeRequest }] });
+            // --- APLICANDO REINTENTO ---
+            const transcodeResult = await generateContentWithRetry(model, { contents: [{ parts: transcodeRequest }] });
             userMessageText = transcodeResult.response.text();
             console.log(`-> Transcripción: ${userMessageText}`);
         } else {
@@ -572,6 +631,8 @@ client.on('message', async msg => {
             "olvida lo que hablamos" -> {"intent": "BORRAR_MEMORIA"}
             "hola" -> {"intent": "CHAT"}
 
+            nota: considera eufemismos como "medio dia" (12 pm)
+
             ---
             HISTORIAL DE CONTEXTO (para ayudarte a entender el mensaje nuevo):
             ${historyForRouter.slice(0, -1).map(h => `${h.role}: ${h.parts[0].text}`).join('\n')}
@@ -584,7 +645,8 @@ client.on('message', async msg => {
 
         // 4. Llamar al Router de Gemini (modelo genérico)
         console.log(`💬 Clasificando intención para ${userName} (con historial)...`);
-        const result = await model.generateContent(routerPromptText);
+        // --- APLICANDO REINTENTO ---
+        const result = await generateContentWithRetry(model, routerPromptText);
         const action = cleanGeminiJson(result.response.text());
         console.log(`🤖 Acción decidida por Gemini para ${userName}:`, action);
 
@@ -762,8 +824,10 @@ client.on('message', async msg => {
                 // 3. Iniciar el chat con el modelo e historial correctos
                 const chat = chatModelToUse.startChat({
                     history: userHistory.slice(0, -1), // Historial SIN el último mensaje del usuario
-                 });
-                const chatResult = await chat.sendMessage(userMessageText); // Enviar solo el último mensaje
+                   });
+                
+                // --- APLICANDO REINTENTO ---
+                const chatResult = await sendChatWithRetry(chat, userMessageText); // Enviar solo el último mensaje
                 responseText = chatResult.response.text();
                 
                 console.log(`🤖 Respuesta de ${userName}: ${responseText}`);
@@ -811,7 +875,7 @@ process.on('SIGINT', async () => {
     await mongoose.connection.close();
     if (client) {
         await client.destroy();
-     }
+    }
     process.exit(0);
 });
 
