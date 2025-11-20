@@ -11,13 +11,10 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const chrono = require('chrono-node');
 
 // --- MODIFICADO: Números de los usuarios ---
-// Usuario 1 (Miri) - Recibe mensajes proactivos
 const TARGET_NUMBER_RAW = `${process.env.TARGET_NUMBER}@c.us`; 
-// Usuario 2 (Luis) - No recibe mensajes proactivos
 const TARGET_NUMBER_2_RAW = `${process.env.TARGET_NUMBER_2}@c.us`; 
 
 // --- Esquemas de Mongoose ---
-// Los esquemas (la estructura) son los mismos
 const listSchema = new mongoose.Schema({ numero: String, nombre: String, items: [String] });
 const recordatorioSchema = new mongoose.Schema({
     numero: String,
@@ -25,38 +22,27 @@ const recordatorioSchema = new mongoose.Schema({
     fecha: Date,
     enviado: { type: Boolean, default: false },
     isRecurring: { type: Boolean, default: false },
-    recurrenceRuleText: { type: String, default: null } 
+    recurrenceRuleText: { type: String, default: null },
+    horaOriginal: { type: Number, default: null }, // NUEVO: Almacena la hora original (0-23)
+    minutoOriginal: { type: Number, default: null } // NUEVO: Almacena el minuto original (0-59)
 });
 
-// --- MODIFICADO: Modelos de Mongoose (Colecciones separadas) ---
+// --- Modelos de Mongoose ---
+const Listas = mongoose.model('Lista', listSchema);
+const Recordatorios = mongoose.model('Recordatorio', recordatorioSchema);
+const LuisListas = mongoose.model('LuisLista', listSchema, 'luis_listas');
+const LuisRecordatorios = mongoose.model('LuisRecordatorio', recordatorioSchema, 'luis_recordatorios');
 
-// Modelos para Usuario 1 (Miri) - Usarán las colecciones por defecto 'listas' y 'recordatorios'
-const Listas = mongoose.model('Lista', listSchema); // Colección: 'listas'
-const Recordatorios = mongoose.model('Recordatorio', recordatorioSchema); // Colección: 'recordatorios'
-
-// Modelos para Usuario 2 (Luis) - Especificamos colecciones personalizadas
-const LuisListas = mongoose.model('LuisLista', listSchema, 'luis_listas'); // Colección: 'luis_listas'
-const LuisRecordatorios = mongoose.model('LuisRecordatorio', recordatorioSchema, 'luis_recordatorios'); // Colección: 'luis_recordatorios'
-
-
-// Modelo para el mensaje diario (este sí es global y único)
 const dailyMessageSchema = new mongoose.Schema({
     singletonId: { type: String, default: 'main', unique: true },
     nextScheduledTime: Date
 });
 const DailyMessageState = mongoose.model('DailyMessageState', dailyMessageSchema);
 
-
-// --- MODIFICADO: Almacén de Historial de Chat (Multi-usuario) ---
-let userHistories = {}; // Clave: numero, Valor: array de historial
+// --- Almacén de Historial de Chat (Multi-usuario) ---
+let userHistories = {};
 const MAX_HISTORY_TURNS = 20;
 
-/**
- * Añade un turno al historial del usuario específico.
- * @param {string} numero - El ID completo del usuario (ej. "521...@c.us")
- * @param {string} role - 'user' o 'model'
- * @param {string} contentText - El texto del mensaje
- */
 function addToHistory(numero, role, contentText) {
     if (!userHistories[numero]) {
         userHistories[numero] = [];
@@ -74,19 +60,10 @@ function addToHistory(numero, role, contentText) {
     }
 }
 
-/**
- * Obtiene el historial de un usuario.
- * @param {string} numero - El ID completo del usuario
- * @returns {Array} - El historial de conversación
- */
 function getHistory(numero) {
     return userHistories[numero] || [];
 }
 
-/**
- * Limpia el historial de un usuario.
- * @param {string} numero - El ID completo del usuario
- */
 function clearHistory(numero) {
     userHistories[numero] = [];
     console.log(`♻️ Historial de conversación borrado para ${numero}.`);
@@ -108,12 +85,9 @@ const dbName = "AilaBot";
 
 // --- Configuración de Gemini ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// Modelo genérico para tareas (Router, Transcripción, Visión)
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // NO SE CAMBIA
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
-// --- MODIFICADO: Personalidades y Modelos de Chat ---
-
-// Personalidad para Usuario 1 (Miri)
+// --- Personalidades ---
 const LIRA_PERSONALITY = `
   eres Lira, un asistente virtual que funciona a través de mensajes de WhatsApp. Fuiste creada por Luis específicamente para su novia.
 
@@ -210,10 +184,9 @@ La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos 
 
     No uses un tono robótico; sé cálida, cercana y considerada.
 
-    Nunca comiences tus respuestas con “Lira:” ni con “Respuesta:”. Responde directo, como una conversación natural por WhatsApp.
+    Nunca comiences tus respuestas con "Lira:" ni con "Respuesta:". Responde directo, como una conversación natural por WhatsApp.
 `;
 
-// Personalidad para Usuario 2 (Luis)
 const LUIS_PERSONALITY = `
     Eres un asistente virtual de IA, estás funcionando mediante mensajes de WhatsApp.
     Estás hablando con tu creador, Luis.
@@ -264,32 +237,29 @@ Objetivo del Asistente:
 La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos técnicos, brindar guía paso a paso cuando sea necesario, y adaptar las recomendaciones a su contexto académico, personal y profesional. El asistente debe ser directo, evitar rodeos y hablar en un tono amistoso y cercano.
 `;
 
-// Modelo de Chat para Usuario 1 (Miri)
 const liraChatModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash", // NO SE CAMBIA
+    model: "gemini-2.0-flash-exp",
     systemInstruction: LIRA_PERSONALITY,
 });
 
-// Modelo de Chat para Usuario 2 (Luis)
 const luisChatModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash", // NO SE CAMBIA
+    model: "gemini-2.0-flash-exp",
     systemInstruction: LUIS_PERSONALITY,
 });
 
-// --- Configuración de WhatsApp con RemoteAuth ---
+// --- Configuración de WhatsApp ---
 const store = new MongoStore({ mongoose: mongoose });
 const client = new Client({
     authStrategy: new RemoteAuth({ store: store, backupSyncIntervalMs: 300000, dataPath: './.wwebjs_auth/' }),
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
 
-// --- Eventos de WhatsApp ---
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', () => console.log('✅ Conectado a WhatsApp (Sesión remota lista)'));
 client.on('auth_failure', msg => console.error('❌ Error de autenticación:', msg));
 client.on('disconnected', reason => { console.log('⚠️ Cliente desconectado:', reason); client.initialize(); });
 
-// --- Función Auxiliar para Limpiar JSON de Gemini ---
+// --- Funciones Auxiliares ---
 function cleanGeminiJson(rawText) {
     try {
         const cleaned = rawText.replace(/```json|```/g, '').trim();
@@ -300,41 +270,28 @@ function cleanGeminiJson(rawText) {
     }
 }
 
-// --- NUEVO: Funciones de Reintento con Backoff ---
-
-// Función básica para esperar (delay)
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Wrapper para model.generateContent con reintentos.
- */
 async function generateContentWithRetry(model, request, maxRetries = 10, currentAttempt = 1) {
     try {
-        // El 'request' puede ser un string (para el router) o un objeto (para audio/imagen)
         return await model.generateContent(request); 
     } catch (error) {
-        // Comprobar si es el error 503 o de sobrecarga
         if (error.message && (error.message.includes('503') || error.message.includes('overloaded'))) {
             if (currentAttempt < maxRetries) {
-                // Cálculo de backoff exponencial (ej. 2s, 4s, 8s)
                 const waitTime = Math.pow(2, currentAttempt) * 1000;
                 console.warn(`⚠️ Modelo sobrecargado (503). Reintento ${currentAttempt}/${maxRetries} en ${waitTime}ms...`);
                 await delay(waitTime);
                 return await generateContentWithRetry(model, request, maxRetries, currentAttempt + 1);
             } else {
                 console.error(`❌ Modelo sobrecargado. Se alcanzó el máximo de ${maxRetries} reintentos.`);
-                throw error; // Lanza el error después de los reintentos
+                throw error;
             }
         } else {
-            // No es un error 503, lanzarlo inmediatamente
             throw error;
         }
     }
 }
 
-/**
- * Wrapper para chat.sendMessage con reintentos.
- */
 async function sendChatWithRetry(chat, message, maxRetries = 3, currentAttempt = 1) {
     try {
         return await chat.sendMessage(message); 
@@ -355,78 +312,178 @@ async function sendChatWithRetry(chat, message, maxRetries = 3, currentAttempt =
     }
 }
 
+// ========== CORRECCIÓN: Funciones de Zona Horaria ==========
 
-// --- TAREAS DE FONDO (TICKER) ---
+/**
+ * Convierte una fecha UTC a la zona horaria del usuario (Mexico_City = UTC-6)
+ * @param {Date} utcDate - Fecha en UTC
+ * @returns {Date} - Nueva fecha ajustada a zona horaria local
+ */
+function utcToUserTimezone(utcDate) {
+    // Mexico City está en UTC-6 permanentemente
+    const offsetHours = -6;
+    const localDate = new Date(utcDate.getTime() + (offsetHours * 60 * 60 * 1000));
+    return localDate;
+}
 
-// --- 1. Check de Recordatorios (MODIFICADO) ---
-// Ahora revisa ambas colecciones de recordatorios
+/**
+ * Convierte una fecha de la zona horaria del usuario a UTC
+ * @param {Date} localDate - Fecha en zona horaria local
+ * @returns {Date} - Nueva fecha en UTC
+ */
+function userTimezoneToUtc(localDate) {
+    const offsetHours = -6;
+    const utcDate = new Date(localDate.getTime() - (offsetHours * 60 * 60 * 1000));
+    return utcDate;
+}
+
+/**
+ * CORREGIDO: Parsea una fecha desde texto, asumiendo zona horaria del usuario
+ * @param {string} cuandoTexto - Texto con la fecha (ej. "mañana a las 8am")
+ * @returns {Object|null} - {fecha: Date (en UTC), hora: number, minuto: number} o null
+ */
+function parsearFechaConZonaHoraria(cuandoTexto) {
+    // Parseamos asumiendo que el usuario está en su zona horaria local
+    const ahora = new Date();
+    
+    // chrono parsea en el contexto de la hora del servidor
+    const resultados = chrono.es.parse(cuandoTexto, ahora, { forwardDate: true });
+    
+    if (!resultados || resultados.length === 0) {
+        return null;
+    }
+    
+    // Tomamos el primer resultado
+    const resultado = resultados[0];
+    const fechaParseada = resultado.start.date();
+    
+    // IMPORTANTE: chrono devuelve una fecha en la zona horaria del servidor
+    // Necesitamos ajustarla como si fuera en la zona del usuario
+    
+    // Guardamos hora y minuto originales
+    const horaOriginal = fechaParseada.getHours();
+    const minutoOriginal = fechaParseada.getMinutes();
+    
+    // Ahora creamos la fecha correcta en UTC
+    // Si el usuario dice "8am", queremos que sean las 8am en Mexico City (UTC-6)
+    // Eso significa 14:00 UTC (8am + 6 horas)
+    const fechaEnUtc = new Date(Date.UTC(
+        fechaParseada.getFullYear(),
+        fechaParseada.getMonth(),
+        fechaParseada.getDate(),
+        horaOriginal + 6, // Ajuste UTC-6 -> UTC
+        minutoOriginal,
+        0,
+        0
+    ));
+    
+    return {
+        fecha: fechaEnUtc,
+        hora: horaOriginal,
+        minuto: minutoOriginal,
+        textoOriginal: resultado.text
+    };
+}
+
+/**
+ * CORREGIDO: Reprograma un recordatorio diario
+ * @param {Object} recordatorio - Documento del recordatorio
+ * @returns {Date|null} - Nueva fecha en UTC o null si falla
+ */
+function reprogramarRecordatorioDiario(recordatorio) {
+    if (!recordatorio.horaOriginal === null || recordatorio.minutoOriginal === null) {
+        console.error("No se puede reprogramar: faltan horaOriginal/minutoOriginal");
+        return null;
+    }
+    
+    // Obtenemos la fecha actual en UTC
+    const ahora = new Date();
+    
+    // Creamos la próxima ocurrencia
+    let proximaFecha = new Date(Date.UTC(
+        ahora.getUTCFullYear(),
+        ahora.getUTCMonth(),
+        ahora.getUTCDate(),
+        recordatorio.horaOriginal + 6, // Hora del usuario + offset UTC
+        recordatorio.minutoOriginal,
+        0,
+        0
+    ));
+    
+    // Si ya pasó hoy, programamos para mañana
+    if (proximaFecha <= ahora) {
+        proximaFecha.setUTCDate(proximaFecha.getUTCDate() + 1);
+    }
+    
+    return proximaFecha;
+}
+
+// ========== FIN DE CORRECCIÓN ==========
+
+// --- TAREAS DE FONDO ---
+
+// CORREGIDO: Check de Recordatorios
 async function checkReminders() {
     try {
         const ahora = new Date();
         
-        // Buscamos en ambas colecciones
         const pendientesMiri = await Recordatorios.find({ fecha: { $lte: ahora }, enviado: false });
         const pendientesLuis = await LuisRecordatorios.find({ fecha: { $lte: ahora }, enviado: false });
         
-        // Combinamos los resultados
         const pendientes = [...pendientesMiri, ...pendientesLuis];
 
         if (pendientes.length === 0) return;
         
-        console.log(`Enviando ${pendientes.length} recordatorio(s) de AMBAS colecciones...`);
+        console.log(`📢 Enviando ${pendientes.length} recordatorio(s)...`);
 
         for (const recordatorio of pendientes) {
-            
-            // --- MODIFICADO: Determinar qué modelo actualizar ---
-            // Comprobamos a qué usuario pertenece el recordatorio para saber qué colección actualizar
             let ModeloRecordatorioUpdate;
             if (recordatorio.numero === TARGET_NUMBER_RAW) {
                 ModeloRecordatorioUpdate = Recordatorios;
             } else if (recordatorio.numero === TARGET_NUMBER_2_RAW) {
                 ModeloRecordatorioUpdate = LuisRecordatorios;
             } else {
-                continue; // Seguridad por si acaso
+                continue;
             }
 
-            // Actualizamos el documento en su colección correspondiente
+            // Marcar como enviado
             await ModeloRecordatorioUpdate.updateOne({ _id: recordatorio._id }, { $set: { enviado: true } });
 
-            // Envía el recordatorio al 'numero' guardado en el documento (esto estaba bien)
+            // Enviar el mensaje
             await client.sendMessage(recordatorio.numero, `¡RECORDATORIO! ⏰\n\n${recordatorio.texto}`);
             
-            if (recordatorio.isRecurring && recordatorio.recurrenceRuleText) {
-                console.log(`Reprogramando recordatorio: ${recordatorio.texto} para ${recordatorio.numero}`);
+            // CORREGIDO: Lógica de reprogramación
+            if (recordatorio.isRecurring) {
+                console.log(`♻️ Reprogramando recordatorio diario: ${recordatorio.texto}`);
                 
-                const proximasFechas = chrono.es.parse(recordatorio.recurrenceRuleText, new Date(), { forwardDate: true });
-
-                if (proximasFechas.length > 0) {
-                    const proximaFecha = proximasFechas[0].start.date();
-                    
-                    // Reprogramamos en su colección correspondiente
+                const proximaFecha = reprogramarRecordatorioDiario(recordatorio);
+                
+                if (proximaFecha) {
                     await ModeloRecordatorioUpdate.updateOne(
                         { _id: recordatorio._id },
                         { $set: { fecha: proximaFecha, enviado: false } }
                     );
-                    console.log(`Reprogramado para: ${proximaFecha.toLocaleString('es-MX')}`);
-
+                    
+                    // Mostrar en hora local para el log
+                    const fechaLocal = proximaFecha.toLocaleString('es-MX', { 
+                        timeZone: 'America/Mexico_City', 
+                        dateStyle: 'medium', 
+                        timeStyle: 'short' 
+                    });
+                    console.log(`✅ Reprogramado para: ${fechaLocal}`);
                 } else {
-                    console.error(`No se pudo re-parsear la regla: ${recordatorio.recurrenceRuleText}. El recordatorio no se repetirá.`);
+                    console.error(`❌ No se pudo reprogramar el recordatorio: ${recordatorio.texto}`);
                 }
-                
             } else {
-                console.log(`Recordatorio único completado: ${recordatorio.texto}`);
-                // Opcional: borrarlo si ya no es recurrente
-                // await ModeloRecordatorioUpdate.deleteOne({ _id: recordatorio._id });
+                console.log(`✅ Recordatorio único completado: ${recordatorio.texto}`);
             }
         }
     } catch (error) {
-        console.error("❌ Error en el 'checkReminders':", error);
+        console.error("❌ Error en 'checkReminders':", error);
     }
 }
 
-// --- 2. Check de Mensaje Proactivo (Sin cambios) ---
-// Esta función está diseñada para enviar mensajes SÓLO a Miri (TARGET_NUMBER_RAW)
-
+// Mensajes Proactivos (sin cambios)
 async function generateProactiveMessage() { 
     console.log("💬 Generando mensaje proactivo para Miri...");
     const prompt = `
@@ -443,7 +500,6 @@ async function generateProactiveMessage() {
         Sé creativa y natural, como Lira.
         Tu respuesta:
     `;
-    // USAREMOS EL WRAPPER AQUÍ TAMBIÉN POR SI ACASO
     const result = await generateContentWithRetry(model, prompt);
     return result.response.text();
 }
@@ -492,18 +548,15 @@ async function checkProactiveMessage() {
     }
 }
 
-
-// --- El Ticker de Fondo (Sin cambios) ---
 async function backgroundTicker() {
-    await checkReminders(); // Revisa recordatorios para TODOS (ahora modificado)
-    await checkProactiveMessage(); // Revisa mensaje proactivo SÓLO PARA MIRI
+    await checkReminders();
+    await checkProactiveMessage();
 }
 
-// --- Evento de Mensaje: ¡CEREBRO CON MEMORIA! ---
+// --- Evento de Mensaje ---
 client.on('message', async msg => {
     try {
-        // --- MODIFICADO: Identificación de Usuario ---
-        const numeroCompleto = msg.from; // ID completo (ej. "521...@c.us")
+        const numeroCompleto = msg.from;
         const numeroLimpio = numeroCompleto.replace('@c.us', '');
         
         const isUser1 = (numeroCompleto === TARGET_NUMBER_RAW);
@@ -511,7 +564,6 @@ client.on('message', async msg => {
         
         console.log(`📩 Mensaje recibido de ${numeroLimpio}`);
 
-        // --- MODIFICADO: Filtro de Números ---
         if (!isUser1 && !isUser2) {
             console.log(`Ignorando mensaje de un número no autorizado: ${numeroLimpio}`);
             return;
@@ -520,10 +572,8 @@ client.on('message', async msg => {
         const userName = isUser1 ? "Miri" : "Luis";
         console.log(`-> Mensaje de: ${userName}`);
 
-        // --- MODIFICADO: Selección dinámica de Modelos ---
         const ListaModel = isUser1 ? Listas : LuisListas;
         const RecordatorioModel = isUser1 ? Recordatorios : LuisRecordatorios;
-
 
         const isAudio = (msg.type === 'audio' || msg.type === 'ptt');
         const isText = (msg.type === 'chat');
@@ -531,7 +581,7 @@ client.on('message', async msg => {
 
         let userMessageText = "";
 
-        // --- RAMA 1: LÓGICA DE IMÁGENES (MODIFICADA) ---
+        // IMÁGENES
         if (isImage) {
             console.log(`-> Tipo IMAGE. Descargando media...`);
             const media = await msg.downloadMedia();
@@ -539,7 +589,6 @@ client.on('message', async msg => {
 
             const caption = msg.body;
             
-            // --- MODIFICADO: Prompt de imagen dinámico ---
             let imageChatPrompt = "";
             if (isUser1) {
                 imageChatPrompt = `${LIRA_PERSONALITY}\n---\nMiri (tu novia) te acaba de enviar una imagen. `;
@@ -548,7 +597,7 @@ client.on('message', async msg => {
                 } else {
                     imageChatPrompt += `No escribió ningún pie de foto.\n\nHaz un comentario amable y cariñosa sobre lo que ves en la imagen.`;
                 }
-            } else { // es User 2 (Luis)
+            } else {
                 imageChatPrompt = `${LUIS_PERSONALITY}\n---\nLuis (tu creador) te acaba de enviar una imagen. `;
                 if (caption) {
                     imageChatPrompt += `El pie de foto dice: "${caption}".\n\nHaz un comentario sobre la imagen y su texto.`;
@@ -560,21 +609,18 @@ client.on('message', async msg => {
             const imagePayload = [ { text: imageChatPrompt }, { inlineData: { mimeType: media.mimetype, data: media.data } } ];
             console.log(`💬 Enviando a ${userName} (imagen)...`);
             
-            // Usamos el modelo genérico para visión
-            // --- APLICANDO REINTENTO ---
             const result = await generateContentWithRetry(model, { contents: [{ parts: imagePayload }] });
             const chatText = result.response.text();
             
             console.log(`🤖 Respuesta de ${userName} (imagen): ${chatText}`);
             await client.sendMessage(msg.from, chatText);
             
-            // --- MODIFICADO: Historial por usuario ---
             addToHistory(numeroCompleto, 'user', `[IMAGEN] ${caption || ''}`);
             addToHistory(numeroCompleto, 'model', chatText);
             return;
         }
 
-        // --- RAMA 2: LÓGICA DE TEXTO Y AUDIO (Sin cambios de lógica, solo de historial) ---
+        // TEXTO Y AUDIO
         if (isText) {
             userMessageText = msg.body;
             console.log(`-> Tipo TEXTO: ${userMessageText}`);
@@ -584,8 +630,6 @@ client.on('message', async msg => {
             const audioParts = [{ inlineData: { mimeType: media.mimetype, data: media.data } }];
             const transcodeRequest = [{ text: "Transcribe el siguiente audio a texto:" }, ...audioParts];
             
-            // Usamos el modelo genérico para transcripción
-            // --- APLICANDO REINTENTO ---
             const transcodeResult = await generateContentWithRetry(model, { contents: [{ parts: transcodeRequest }] });
             userMessageText = transcodeResult.response.text();
             console.log(`-> Transcripción: ${userMessageText}`);
@@ -594,12 +638,9 @@ client.on('message', async msg => {
             return;
         }
 
-        // 2. Guardar el mensaje del usuario en SU Historial
-        // --- MODIFICADO: Historial por usuario ---
         addToHistory(numeroCompleto, 'user', userMessageText);
 
-        // 3. --- PROMPT DEL ROUTER (MODIFICADO) ---
-        // --- MODIFICADO: Obtener historial por usuario ---
+        // ROUTER
         const historyForRouter = getHistory(numeroCompleto);
         
         const routerPromptText = `
@@ -619,9 +660,8 @@ client.on('message', async msg => {
           
           // Ejemplos de Recordatorios
           "recuérdame que mañana tengo cita a las 10am" -> {"intent": "RECUERDA_CREAR", "que": "tengo cita", "cuando": "mañana a las 10am"}
-Â 			 		 "recuérdame tomar mis pastillas todos los dias a las 8 am y las 8 pm" -> {"intent": "RECUERDA_CREAR", "que": "tomar mis pastillas", "cuando": "todos los dias a las 8 am y las 8 pm"}
+          "recuérdame tomar mis pastillas todos los dias a las 8 am y las 8 pm" -> {"intent": "RECUERDA_CREAR", "que": "tomar mis pastillas", "cuando": "todos los dias a las 8 am y las 8 pm"}
           
-          // --- NUEVOS EJEMPLOS ---
           "¿qué recordatorios tengo?" -> {"intent": "RECUERDA_VER"}
           "enséñame mis pendientes" -> {"intent": "RECUERDA_VER"}
           "cancela el recordatorio de las pastillas" -> {"intent": "RECUERDA_ELIMINAR", "que": "pastillas"}
@@ -643,34 +683,29 @@ client.on('message', async msg => {
           JSON:
         `;
 
-        // 4. Llamar al Router de Gemini (modelo genérico)
         console.log(`💬 Clasificando intención para ${userName} (con historial)...`);
-        // --- APLICANDO REINTENTO ---
         const result = await generateContentWithRetry(model, routerPromptText);
         const action = cleanGeminiJson(result.response.text());
         console.log(`🤖 Acción decidida por Gemini para ${userName}:`, action);
 
         let responseText = "";
 
-        // 5. --- Ejecutar la Acción (Switch Case) ---
-        // --- MODIFICADO: Usar ListaModel y RecordatorioModel ---
-        
+        // SWITCH DE ACCIONES
         switch (action.intent) {
             
             case "BORRAR_MEMORIA":
-                clearHistory(numeroCompleto); // Borra solo el historial de ESTE usuario
+                clearHistory(numeroCompleto);
                 responseText = "¡Listo! Empecemos de cero. ¿De qué quieres hablar?";
                 await client.sendMessage(msg.from, responseText);
                 break; 
 
-            // --- Lógica de Listas (MODIFICADA) ---
-            // Ahora usa 'ListaModel' que es dinámico
             case "LISTA_AGREGAR":
                 await ListaModel.updateOne({ numero: msg.from, nombre: action.nombreLista }, { $push: { items: action.item } }, { upsert: true });
                 responseText = `"${action.item}" añadido a tu lista "${action.nombreLista}".`;
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
+                
             case "LISTA_VER":
                 const lista = await ListaModel.findOne({ numero: msg.from, nombre: action.nombreLista });
                 if (lista && lista.items && lista.items.length > 0) {
@@ -679,18 +714,21 @@ client.on('message', async msg => {
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
+                
             case "LISTA_BORRAR_ITEM":
                 await ListaModel.updateOne({ numero: msg.from, nombre: action.nombreLista }, { $pull: { items: action.item } });
                 responseText = `"${action.item}" borrado de la lista "${action.nombreLista}".`;
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
+                
             case "LISTA_ELIMINAR":
                 await ListaModel.deleteOne({ numero: msg.from, nombre: action.nombreLista });
                 responseText = `Lista "${action.nombreLista}" eliminada por completo.`;
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
+                
             case "LISTAS_VER_TODAS":
                 const todas = await ListaModel.distinct("nombre", { numero: msg.from });
                 if (todas.length > 0) {
@@ -700,13 +738,10 @@ client.on('message', async msg => {
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
 
-            // --- Lógica de Recordatorios (MODIFICADA) ---
-            // Ahora usa 'RecordatorioModel' que es dinámico
+            // ========== CORREGIDO: RECUERDA_CREAR ==========
             case "RECUERDA_CREAR":
                 const que = action.que;
-                
-                // --- INICIO DE CORRECCIÓN: Lógica de Zona Horaria ---
-                let cuando = action.cuando; // Se convierte a 'let'
+                const cuando = action.cuando;
                 
                 if (!que || !cuando) {
                     responseText = "No entendí bien tu recordatorio. Necesito saber *qué* quieres que te recuerde y *cuándo*.";
@@ -715,72 +750,66 @@ client.on('message', async msg => {
                     break;
                 }
 
-                // Definimos la zona horaria del usuario (America/Mexico_City es UTC-6 permanente)
-                const userTimezoneOffset = " (UTC-6)";
+                console.log(`⏰ Creando recordatorio: "${que}" para "${cuando}"`);
                 
-                // Comprobamos si el usuario ya especificó una zona horaria (ej. "UTC", "GMT", "CST", "EDT")
-                // Esta es una comprobación simple
-                const hasTimezone = /UTC|GMT|([A-Z]{2,3}T)/i.test(cuando);
-
-                if (!hasTimezone) {
-                    console.log(`Añadiendo offset UTC-6 a la fecha: "${cuando}"`);
-                    cuando += userTimezoneOffset; // Añadimos el offset para que chrono lo parsee correctamente
-                }
-                // --- FIN DE CORRECCIÓN ---
-
-
-                // El 'new Date()' de referencia sigue siendo el del servidor (UTC),
-                // pero ahora 'cuando' tiene el contexto de la zona horaria (UTC-6).
-                const fechaParseada = chrono.es.parse(cuando, new Date(), { forwardDate: true });
+                // Detectar si es recurrente
+                const isRecurring = /todos los d[ií]as?|cada d[ií]a|diario|diariamente|cada (lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)|semanalmente|cada semana/i.test(cuando);
                 
-                if (!fechaParseada || fechaParseada.length === 0) {
-                    // (La variable 'cuando' aquí ya tendría el " (UTC-6)" si se añadió)
-                    responseText = `No entendí la fecha para tu recordatorio: "${action.cuando}". ¿Podrías ser más específica?`;
-                } else {
-                    const isRecurring = /todos los dias|cada dia|diario|cada (lunes|martes|miércoles|jueves|viernes|sábado|domingo)|semanalmente|cada semana/i.test(action.cuando); // Usamos el 'cuando' original para la recurrencia
-                    
-                    let responses = [];
-                    
-                    for (const result of fechaParseada) {
-                        const fecha = result.start.date(); // Esto AHORA será la hora UTC correcta (ej. 12pm CST -> 18:00 UTC)
-                        const reglaTexto = result.text; 
-
-                        await RecordatorioModel.create({
-                            numero: msg.from, // Se guarda con el número del usuario
-                            texto: que,
-                            fecha: fecha,
-                            enviado: false,
-                            isRecurring: isRecurring,
-                            recurrenceRuleText: isRecurring ? reglaTexto : null 
-                        });
-                        
-                        responses.push(`"${que}" el ${fecha.toLocaleString('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'medium', timeStyle: 'short' })}`);
-                    }
-                    
-                    if (responses.length > 1) {
-                        responseText = `¡Anotado! He creado ${responses.length} recordatorios:\n- ${responses.join('\n- ')}`;
-                    } else {
-                        responseText = `¡Anotado! Te recordaré ${responses[0]}`;
-                    }
-                    
-                    if (isRecurring) {
-                        responseText += `\n(Lo programaré recurrentemente ^^)`;
-                    }
+                // USAR LA NUEVA FUNCIÓN DE PARSEO
+                const resultadoParseo = parsearFechaConZonaHoraria(cuando);
+                
+                if (!resultadoParseo) {
+                    responseText = `No entendí la fecha para tu recordatorio: "${cuando}". ¿Podrías ser más específica?`;
+                    await client.sendMessage(msg.from, responseText);
+                    addToHistory(numeroCompleto, 'model', responseText);
+                    break;
                 }
+                
+                const { fecha, hora, minuto, textoOriginal } = resultadoParseo;
+                
+                // Crear el recordatorio con los nuevos campos
+                await RecordatorioModel.create({
+                    numero: msg.from,
+                    texto: que,
+                    fecha: fecha, // Ya está en UTC correctamente
+                    enviado: false,
+                    isRecurring: isRecurring,
+                    recurrenceRuleText: isRecurring ? textoOriginal : null,
+                    horaOriginal: hora, // Guardamos la hora original del usuario
+                    minutoOriginal: minuto // Guardamos el minuto original
+                });
+                
+                // Mostrar confirmación en hora local
+                const fechaLocal = fecha.toLocaleString('es-MX', { 
+                    timeZone: 'America/Mexico_City', 
+                    dateStyle: 'medium', 
+                    timeStyle: 'short' 
+                });
+                
+                responseText = `¡Anotado! Te recordaré "${que}" el ${fechaLocal}`;
+                
+                if (isRecurring) {
+                    responseText += `\n(Lo programaré recurrentemente ^^)`;
+                }
+                
+                console.log(`✅ Recordatorio creado: ${que} -> ${fechaLocal} (UTC: ${fecha.toISOString()})`);
+                
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
 
             case "RECUERDA_VER":
-                // Busca solo recordatorios de ESTE usuario en SU colección
                 const pendientes = await RecordatorioModel.find({ numero: msg.from, enviado: false }).sort({ fecha: 1 });
                 
                 if (pendientes.length === 0) {
                     responseText = "No tienes ningún recordatorio pendiente. ^^";
                 } else {
                     const listaRecordatorios = pendientes.map((r, i) => {
-                        // Mostramos la fecha en la zona horaria correcta
-                        const fechaLocal = r.fecha.toLocaleString('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'full', timeStyle: 'short' });
+                        const fechaLocal = r.fecha.toLocaleString('es-MX', { 
+                            timeZone: 'America/Mexico_City', 
+                            dateStyle: 'full', 
+                            timeStyle: 'short' 
+                        });
                         let linea = `${i + 1}. "${r.texto}"\n    └─ ${fechaLocal}`;
                         if (r.isRecurring) {
                             linea += " (recurrente)";
@@ -808,12 +837,10 @@ client.on('message', async msg => {
                 let deleteResult;
                 
                 if (queBorrar.toLowerCase() === 'todos') {
-                    // Borra solo recordatorios de ESTE usuario en SU colección
                     deleteResult = await RecordatorioModel.deleteMany({ numero: msg.from });
                     responseText = `¡Listo! He borrado todos tus ${deleteResult.deletedCount} recordatorio(s).`;
                 
                 } else {
-                    // Borra solo recordatorios de ESTE usuario en SU colección que coincidan
                     deleteResult = await RecordatorioModel.deleteMany({
                         numero: msg.from,
                         texto: { $regex: queBorrar, $options: 'i' }
@@ -831,30 +858,23 @@ client.on('message', async msg => {
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
 
-            // --- MODIFICADO: Lógica de CHAT ---
             case "CHAT":
             default:
-                // 1. Seleccionar el modelo de chat correcto
                 const chatModelToUse = isUser1 ? liraChatModel : luisChatModel;
-                
-                // 2. Obtener el historial correcto
                 const userHistory = getHistory(numeroCompleto);
 
                 console.log(`💬 Enviando a ${userName} (chat con historial de ${userHistory.length} mensajes)...`);
                 
-                // 3. Iniciar el chat con el modelo e historial correctos
                 const chat = chatModelToUse.startChat({
-                    history: userHistory.slice(0, -1), // Historial SIN el último mensaje del usuario
-                   });
+                    history: userHistory.slice(0, -1),
+                });
                 
-                // --- APLICANDO REINTENTO ---
-                const chatResult = await sendChatWithRetry(chat, userMessageText); // Enviar solo el último mensaje
+                const chatResult = await sendChatWithRetry(chat, userMessageText);
                 responseText = chatResult.response.text();
                 
                 console.log(`🤖 Respuesta de ${userName}: ${responseText}`);
                 await client.sendMessage(msg.from, responseText);
                 
-                // 4. Guardar la respuesta en el historial correcto
                 addToHistory(numeroCompleto, 'model', responseText);
         }
 
@@ -866,7 +886,7 @@ client.on('message', async msg => {
     }
 });
 
-// --- Función principal para iniciar todo (Sin cambios) ---
+// --- Función principal ---
 async function startServer() {
     try {
         console.log("Conectando a MongoDB (con Mongoose)...");
@@ -877,8 +897,8 @@ async function startServer() {
         await client.initialize();
 
         console.log("⏰ Iniciando el 'ticker' de fondo (cada 60s)...");
-        await checkProactiveMessage(); // Comprobación inicial (solo para Miri)
-        setInterval(backgroundTicker, 60000); // Inicia el bucle
+        await checkProactiveMessage();
+        setInterval(backgroundTicker, 60000);
 
         app.listen(port, () => {
             console.log(`🚀 Servidor Express corriendo en http://localhost:${port}`);
@@ -890,7 +910,7 @@ async function startServer() {
     }
 }
 
-// --- Cierre elegante (Sin cambios) ---
+// --- Cierre elegante ---
 process.on('SIGINT', async () => {
     console.log("Cerrando conexiones...");
     await mongoose.connection.close();
@@ -900,5 +920,4 @@ process.on('SIGINT', async () => {
     process.exit(0);
 });
 
-// ¡Arrancar el servidor!
 startServer();
