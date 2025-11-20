@@ -85,7 +85,7 @@ const dbName = "AilaBot";
 
 // --- Configuración de Gemini ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 // --- Personalidades ---
 const LIRA_PERSONALITY = `
@@ -238,12 +238,12 @@ La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos 
 `;
 
 const liraChatModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.0-flash-exp",
+    model: "gemini-2.5-flash",
     systemInstruction: LIRA_PERSONALITY,
 });
 
 const luisChatModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.0-flash-exp",
+    model: "gemini-2.5-flash",
     systemInstruction: LUIS_PERSONALITY,
 });
 
