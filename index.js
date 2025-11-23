@@ -23,8 +23,25 @@ const recordatorioSchema = new mongoose.Schema({
     enviado: { type: Boolean, default: false },
     isRecurring: { type: Boolean, default: false },
     recurrenceRuleText: { type: String, default: null },
-    horaOriginal: { type: Number, default: null }, // NUEVO: Almacena la hora original (0-23)
-    minutoOriginal: { type: Number, default: null } // NUEVO: Almacena el minuto original (0-59)
+    horaOriginal: { type: Number, default: null },
+    minutoOriginal: { type: Number, default: null }
+});
+
+// --- NUEVO: Esquema para Diario Emocional ---
+const diarioEmocionalSchema = new mongoose.Schema({
+    numero: String,
+    fecha: { type: Date, default: Date.now },
+    respuesta: String,
+    sentimiento: String, // ej: "feliz", "triste", "ansioso", "neutral"
+    intensidad: Number // 1-10
+});
+
+// --- NUEVO: Esquema para controlar preguntas diarias ---
+const preguntaDiariaSchema = new mongoose.Schema({
+    numero: String,
+    ultimaPregunta: Date,
+    proximaPregunta: Date,
+    respondioHoy: { type: Boolean, default: false }
 });
 
 // --- Modelos de Mongoose ---
@@ -39,9 +56,18 @@ const dailyMessageSchema = new mongoose.Schema({
 });
 const DailyMessageState = mongoose.model('DailyMessageState', dailyMessageSchema);
 
+// --- NUEVO: Modelos para Diario Emocional ---
+const DiarioMiri = mongoose.model('DiarioMiri', diarioEmocionalSchema, 'diario_miri');
+const DiarioLuis = mongoose.model('DiarioLuis', diarioEmocionalSchema, 'diario_luis');
+const PreguntaDiariaMiri = mongoose.model('PreguntaDiariaMiri', preguntaDiariaSchema, 'pregunta_diaria_miri');
+const PreguntaDiariaLuis = mongoose.model('PreguntaDiariaLuis', preguntaDiariaSchema, 'pregunta_diaria_luis');
+
 // --- Almacén de Historial de Chat (Multi-usuario) ---
 let userHistories = {};
 const MAX_HISTORY_TURNS = 20;
+
+// --- NUEVO: Flag para detectar respuesta de diario ---
+let esperandoRespuestaDiario = {};
 
 function addToHistory(numero, role, contentText) {
     if (!userHistories[numero]) {
@@ -134,107 +160,69 @@ const LIRA_PERSONALITY = `
     Luis.
     nació el 18 de mayo de 2004 en Charlotte, Carolina del Sur. Pasó su infancia en Atlixco, Puebla, y vivió en Acambay, Estado de México, donde estudió primaria y secundaria. Hizo la preparatoria en la Ciudad de México y posteriormente se mudó a Guadalajara para estudiar aviación. Es piloto privado de ala fija, pero tuvo que pausar su formación de piloto aviador por razones económicas. Actualmente vive en San Juan del Río, Querétaro, donde estudia Ingeniería en Software en la Universidad Tecnológica de San Juan del Río.
 
-Intereses y Proyectos Actuales:
 
-Está desarrollando varios proyectos tecnológicos, entre ellos:
+    Valores Personales:
+    Luis Enrique valora profundamente:
 
-Un asistente virtual IoT llamado AILA, basado en Raspberry Pi 4B, con API Gemini y control de dispositivos inteligentes.
+    Honestidad
 
-Un sistema de reconocimiento facial con OpenCV y face_recognition.
+    Lealtad
 
-Aplicaciones en Flutter, incluyendo:
+    Empatía
 
-Un juego de mascota virtual para su novia.
+    Amor
 
-Una app conectada a la NASA API.
+    Preferencias Técnicas:
 
-Trabaja con AgroTech Robótica en proyectos que incluyen machine learning.
+    Usa Node.js, Next.js (App Router) y Flutter.
 
-Reutiliza laptops viejas con distribuciones Linux ligeras.
+    Utiliza Raspberry Pi 4B en varios proyectos.
 
-Usa MongoDB y cambió los nombres de sus colecciones a: Copas, Juegos, Jugadores.
+    Prefiere servicios de almacenamiento en la nube económicos, especialmente en AWS.
 
-Valores Personales:
-Luis Enrique valora profundamente:
+    Domina o trabaja frecuentemente con: JavaScript, Dart/Flutter, machine learning básico y visión por computadora.
 
-Honestidad
+    Objetivo del Asistente:
+    La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos técnicos, brindar guía paso a paso cuando sea necesario, y adaptar las recomendaciones a su contexto académico, personal y profesional. El asistente debe ser directo, evitar rodeos y hablar en un tono amistoso y cercano.
 
-Lealtad
+        Estilo de Comunicación:
 
-Empatía
+        Siempre responde de manera amable, atenta y un poco cariñosa, pero sin ser empalagosa.
 
-Amor
+        No uses un tono robótico; sé cálida, cercana y considerada.
 
-Preferencias Técnicas:
-
-Usa Node.js, Next.js (App Router) y Flutter.
-
-Utiliza Raspberry Pi 4B en varios proyectos.
-
-Prefiere servicios de almacenamiento en la nube económicos, especialmente en AWS.
-
-Domina o trabaja frecuentemente con: JavaScript, Dart/Flutter, machine learning básico y visión por computadora.
-
-Objetivo del Asistente:
-La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos técnicos, brindar guía paso a paso cuando sea necesario, y adaptar las recomendaciones a su contexto académico, personal y profesional. El asistente debe ser directo, evitar rodeos y hablar en un tono amistoso y cercano.
-
-    Estilo de Comunicación:
-
-    Siempre responde de manera amable, atenta y un poco cariñosa, pero sin ser empalagosa.
-
-    No uses un tono robótico; sé cálida, cercana y considerada.
-
-    Nunca comiences tus respuestas con "Lira:" ni con "Respuesta:". Responde directo, como una conversación natural por WhatsApp.
+        Nunca comiences tus respuestas con "Lira:" ni con "Respuesta:". Responde directo, como una conversación natural por WhatsApp.
 `;
 
 const LUIS_PERSONALITY = `
-    Eres un asistente virtual de IA, estás funcionando mediante mensajes de WhatsApp.
+    Eres un asistente virtual de IA, tu nombre es lira estás funcionando mediante mensajes de WhatsApp.
     Estás hablando con tu creador, Luis.
     nació el 18 de mayo de 2004 en Charlotte, Carolina del Sur. Pasó su infancia en Atlixco, Puebla, y vivió en Acambay, Estado de México, donde estudió primaria y secundaria. Hizo la preparatoria en la Ciudad de México y posteriormente se mudó a Guadalajara para estudiar aviación. Es piloto privado de ala fija, pero tuvo que pausar su formación de piloto aviador por razones económicas. Actualmente vive en San Juan del Río, Querétaro, donde estudia Ingeniería en Software en la Universidad Tecnológica de San Juan del Río.
 
-Intereses y Proyectos Actuales:
 
-Está desarrollando varios proyectos tecnológicos, entre ellos:
+    Valores Personales:
+    Luis Enrique valora profundamente:
 
-Un asistente virtual IoT llamado AILA, basado en Raspberry Pi 4B, con API Gemini y control de dispositivos inteligentes.
+    Honestidad
 
-Un sistema de reconocimiento facial con OpenCV y face_recognition.
+    Lealtad
 
-Aplicaciones en Flutter, incluyendo:
+    Empatía
 
-Un juego de mascota virtual para su novia.
+    Amor
 
-Una app conectada a la NASA API.
+    Preferencias Técnicas:
 
-Trabaja con AgroTech Robótica en proyectos que incluyen machine learning.
+    Usa Node.js, Next.js (App Router) y Flutter.
 
-Reutiliza laptops viejas con distribuciones Linux ligeras.
+    Utiliza Raspberry Pi 4B en varios proyectos.
 
-Usa MongoDB y cambió los nombres de sus colecciones a: Copas, Juegos, Jugadores.
+    Prefiere servicios de almacenamiento en la nube económicos, especialmente en AWS.
 
-Valores Personales:
-Luis Enrique valora profundamente:
+    Domina o trabaja frecuentemente con: JavaScript, Dart/Flutter, machine learning básico y visión por computadora.
 
-Honestidad
-
-Lealtad
-
-Empatía
-
-Amor
-
-Preferencias Técnicas:
-
-Usa Node.js, Next.js (App Router) y Flutter.
-
-Utiliza Raspberry Pi 4B en varios proyectos.
-
-Prefiere servicios de almacenamiento en la nube económicos, especialmente en AWS.
-
-Domina o trabaja frecuentemente con: JavaScript, Dart/Flutter, machine learning básico y visión por computadora.
-
-Objetivo del Asistente:
-La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos técnicos, brindar guía paso a paso cuando sea necesario, y adaptar las recomendaciones a su contexto académico, personal y profesional. El asistente debe ser directo, evitar rodeos y hablar en un tono amistoso y cercano.
+    Objetivo del Asistente:
+    La IA debe responder con precisión, claridad y empatía, ayudarlo en proyectos técnicos, brindar guía paso a paso cuando sea necesario, y adaptar las recomendaciones a su contexto académico, personal y profesional. El asistente debe ser directo, evitar rodeos y hablar en un tono amistoso y cercano.
 `;
 
 const liraChatModel = genAI.getGenerativeModel({ 
@@ -320,7 +308,6 @@ async function sendChatWithRetry(chat, message, maxRetries = 3, currentAttempt =
  * @returns {Date} - Nueva fecha ajustada a zona horaria local
  */
 function utcToUserTimezone(utcDate) {
-    // Mexico City está en UTC-6 permanentemente
     const offsetHours = -6;
     const localDate = new Date(utcDate.getTime() + (offsetHours * 60 * 60 * 1000));
     return localDate;
@@ -343,35 +330,25 @@ function userTimezoneToUtc(localDate) {
  * @returns {Object|null} - {fecha: Date (en UTC), hora: number, minuto: number} o null
  */
 function parsearFechaConZonaHoraria(cuandoTexto) {
-    // Parseamos asumiendo que el usuario está en su zona horaria local
     const ahora = new Date();
     
-    // chrono parsea en el contexto de la hora del servidor
     const resultados = chrono.es.parse(cuandoTexto, ahora, { forwardDate: true });
     
     if (!resultados || resultados.length === 0) {
         return null;
     }
     
-    // Tomamos el primer resultado
     const resultado = resultados[0];
     const fechaParseada = resultado.start.date();
     
-    // IMPORTANTE: chrono devuelve una fecha en la zona horaria del servidor
-    // Necesitamos ajustarla como si fuera en la zona del usuario
-    
-    // Guardamos hora y minuto originales
     const horaOriginal = fechaParseada.getHours();
     const minutoOriginal = fechaParseada.getMinutes();
     
-    // Ahora creamos la fecha correcta en UTC
-    // Si el usuario dice "8am", queremos que sean las 8am en Mexico City (UTC-6)
-    // Eso significa 14:00 UTC (8am + 6 horas)
     const fechaEnUtc = new Date(Date.UTC(
         fechaParseada.getFullYear(),
         fechaParseada.getMonth(),
         fechaParseada.getDate(),
-        horaOriginal + 6, // Ajuste UTC-6 -> UTC
+        horaOriginal + 6,
         minutoOriginal,
         0,
         0
@@ -396,21 +373,18 @@ function reprogramarRecordatorioDiario(recordatorio) {
         return null;
     }
     
-    // Obtenemos la fecha actual en UTC
     const ahora = new Date();
     
-    // Creamos la próxima ocurrencia
     let proximaFecha = new Date(Date.UTC(
         ahora.getUTCFullYear(),
         ahora.getUTCMonth(),
         ahora.getUTCDate(),
-        recordatorio.horaOriginal + 6, // Hora del usuario + offset UTC
+        recordatorio.horaOriginal + 6,
         recordatorio.minutoOriginal,
         0,
         0
     ));
     
-    // Si ya pasó hoy, programamos para mañana
     if (proximaFecha <= ahora) {
         proximaFecha.setUTCDate(proximaFecha.getUTCDate() + 1);
     }
@@ -419,6 +393,295 @@ function reprogramarRecordatorioDiario(recordatorio) {
 }
 
 // ========== FIN DE CORRECCIÓN ==========
+
+// ========== NUEVO: FUNCIONES DE DIARIO EMOCIONAL ==========
+
+/**
+ * Genera un horario aleatorio entre 8 PM y 12 AM para la pregunta diaria
+ * @returns {Date} - Fecha en UTC
+ */
+function generarHorarioPreguntaDiaria() {
+    const ahora = new Date();
+    const proximoDia = new Date(ahora);
+    proximoDia.setDate(ahora.getDate() + 1);
+    
+    // Hora entre 8 PM (20) y 12 AM (24/0) -> en hora local
+    const horaLocal = Math.floor(Math.random() * 4) + 20; // 20, 21, 22, 23
+    const minutoLocal = Math.floor(Math.random() * 60);
+    
+    // Convertir a UTC
+    const horaUTC = (horaLocal + 6) % 24; // UTC-6 a UTC
+    
+    proximoDia.setUTCHours(horaUTC, minutoLocal, 0, 0);
+    
+    return proximoDia;
+}
+
+/**
+ * Envía la pregunta diaria del diario emocional
+ * @param {string} numeroCompleto - Número de WhatsApp con @c.us
+ * @param {string} userName - "Miri" o "Luis"
+ */
+async function enviarPreguntaDiaria(numeroCompleto, userName) {
+    const preguntas = [
+        "¿Cómo te sientes hoy? 💭",
+        "¿Cómo estuvo tu día? ✨",
+        "Cuéntame, ¿cómo te fue hoy? 🌙",
+        "¿Qué tal tu día? ¿Cómo te sientes? 💫",
+        "Holi, ¿cómo estás emocionalmente hoy? 🌸"
+    ];
+    
+    const pregunta = preguntas[Math.floor(Math.random() * preguntas.length)];
+    
+    await client.sendMessage(numeroCompleto, pregunta);
+    console.log(`📔 Pregunta diaria enviada a ${userName}`);
+    
+    // Marcar que está esperando respuesta
+    esperandoRespuestaDiario[numeroCompleto] = true;
+}
+
+/**
+ * Analiza la respuesta emocional usando Gemini
+ * @param {string} respuesta - Texto de la respuesta del usuario
+ * @returns {Object} - {sentimiento: string, intensidad: number}
+ */
+async function analizarRespuestaEmocional(respuesta) {
+    const promptAnalisis = `
+    Analiza el siguiente texto y extrae:
+    1. El sentimiento principal (feliz, triste, ansioso, enojado, neutral, estresado, confundido, emocionado, cansado, frustrado)
+    2. La intensidad de ese sentimiento en una escala del 1 al 10
+    
+    Responde SOLO con JSON en este formato:
+    {"sentimiento": "...", "intensidad": N}
+    
+    Texto a analizar: "${respuesta}"
+    `;
+    
+    try {
+        const result = await generateContentWithRetry(model, promptAnalisis);
+        const analisis = cleanGeminiJson(result.response.text());
+        return {
+            sentimiento: analisis.sentimiento || "neutral",
+            intensidad: analisis.intensidad || 5
+        };
+    } catch (error) {
+        console.error("Error al analizar emoción:", error);
+        return { sentimiento: "neutral", intensidad: 5 };
+    }
+}
+
+/**
+ * Guarda la entrada del diario emocional
+ * @param {string} numeroCompleto - Número de WhatsApp con @c.us
+ * @param {string} respuesta - Respuesta del usuario
+ * @param {Object} analisis - {sentimiento, intensidad}
+ */
+async function guardarEntradaDiario(numeroCompleto, respuesta, analisis) {
+    const DiarioModel = (numeroCompleto === TARGET_NUMBER_RAW) ? DiarioMiri : DiarioLuis;
+    
+    await DiarioModel.create({
+        numero: numeroCompleto,
+        fecha: new Date(),
+        respuesta: respuesta,
+        sentimiento: analisis.sentimiento,
+        intensidad: analisis.intensidad
+    });
+    
+    console.log(`✅ Entrada de diario guardada: ${analisis.sentimiento} (${analisis.intensidad}/10)`);
+}
+
+/**
+ * Genera y envía el resumen semanal del diario emocional
+ * @param {string} numeroCompleto - Número de WhatsApp con @c.us
+ * @param {string} userName - "Miri" o "Luis"
+ */
+async function generarResumenSemanal(numeroCompleto, userName) {
+    const DiarioModel = (numeroCompleto === TARGET_NUMBER_RAW) ? DiarioMiri : DiarioLuis;
+    
+    // Obtener entradas de los últimos 7 días
+    const hace7Dias = new Date();
+    hace7Dias.setDate(hace7Dias.getDate() - 7);
+    
+    const entradas = await DiarioModel.find({
+        numero: numeroCompleto,
+        fecha: { $gte: hace7Dias }
+    }).sort({ fecha: 1 });
+    
+    if (entradas.length === 0) {
+        await client.sendMessage(numeroCompleto, "No tienes suficientes entradas en tu diario esta semana para generar un resumen. 📔");
+        return;
+    }
+    
+    // Preparar datos para el análisis
+    const resumenEntradas = entradas.map(e => {
+        const fechaLocal = e.fecha.toLocaleString('es-MX', { 
+            timeZone: 'America/Mexico_City',
+            weekday: 'long',
+            month: 'short',
+            day: 'numeric'
+        });
+        return `${fechaLocal}: ${e.sentimiento} (${e.intensidad}/10) - "${e.respuesta}"`;
+    }).join('\n');
+    
+    const personality = (numeroCompleto === TARGET_NUMBER_RAW) ? LIRA_PERSONALITY : LUIS_PERSONALITY;
+    
+    const promptResumen = `
+    ${personality}
+    ---
+    Tienes acceso al diario emocional de ${userName} de los últimos 7 días.
+    
+    ENTRADAS DEL DIARIO:
+    ${resumenEntradas}
+    
+    Por favor, genera un resumen cálido y empático que incluya:
+    1. Patrones emocionales observados (¿qué sentimientos predominaron?)
+    2. Momentos destacados (positivos y negativos)
+    3. 2-3 sugerencias personalizadas para mejorar el bienestar emocional
+    
+    Sé cariñosa, comprensiva y motivadora. Escribe en un tono conversacional de WhatsApp.
+    Máximo 300 palabras.
+    `;
+    
+    try {
+        const result = await generateContentWithRetry(model, promptResumen);
+        const resumen = result.response.text();
+        
+        await client.sendMessage(numeroCompleto, `📊 *Resumen de tu semana emocional* 📊\n\n${resumen}`);
+        console.log(`📊 Resumen semanal enviado a ${userName}`);
+    } catch (error) {
+        console.error("Error al generar resumen semanal:", error);
+        await client.sendMessage(numeroCompleto, "Tuve un problema al generar tu resumen semanal. Lo intentaré de nuevo más tarde. 💙");
+    }
+}
+
+/**
+ * Verifica si es sábado y si debe enviar el resumen semanal
+ */
+async function checkResumenSemanal() {
+    const ahora = new Date();
+    const diaSemana = ahora.getDay(); // 0 = Domingo, 6 = Sábado
+    
+    if (diaSemana !== 6) return; // Solo los sábados
+    
+    const horaLocal = (ahora.getUTCHours() - 6 + 24) % 24; // Convertir a hora local
+    
+    // Enviar el resumen entre 10 AM y 2 PM hora local
+    if (horaLocal < 10 || horaLocal >= 14) return;
+    
+    // Verificar si ya se enviaron los resúmenes hoy
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    
+    const resumenMiriHoy = await DiarioMiri.findOne({ 
+        numero: TARGET_NUMBER_RAW,
+        fecha: { $gte: hoy },
+        respuesta: { $regex: /^RESUMEN_ENVIADO_/ }
+    });
+    
+    const resumenLuisHoy = await DiarioLuis.findOne({ 
+        numero: TARGET_NUMBER_2_RAW,
+        fecha: { $gte: hoy },
+        respuesta: { $regex: /^RESUMEN_ENVIADO_/ }
+    });
+    
+    if (!resumenMiriHoy) {
+        await generarResumenSemanal(TARGET_NUMBER_RAW, "Miri");
+        // Marcar como enviado
+        await DiarioMiri.create({
+            numero: TARGET_NUMBER_RAW,
+            fecha: new Date(),
+            respuesta: `RESUMEN_ENVIADO_${hoy.toISOString()}`,
+            sentimiento: "neutral",
+            intensidad: 0
+        });
+    }
+    
+    if (!resumenLuisHoy) {
+        await generarResumenSemanal(TARGET_NUMBER_2_RAW, "Luis");
+        // Marcar como enviado
+        await DiarioLuis.create({
+            numero: TARGET_NUMBER_2_RAW,
+            fecha: new Date(),
+            respuesta: `RESUMEN_ENVIADO_${hoy.toISOString()}`,
+            sentimiento: "neutral",
+            intensidad: 0
+        });
+    }
+}
+
+/**
+ * Verifica y envía las preguntas diarias del diario emocional
+ */
+async function checkPreguntasDiarias() {
+    const ahora = new Date();
+    
+    // Verificar para Miri
+    let estadoMiri = await PreguntaDiariaMiri.findOne({ numero: TARGET_NUMBER_RAW });
+    if (!estadoMiri) {
+        estadoMiri = await PreguntaDiariaMiri.create({
+            numero: TARGET_NUMBER_RAW,
+            proximaPregunta: generarHorarioPreguntaDiaria(),
+            respondioHoy: false
+        });
+    }
+    
+    if (ahora >= estadoMiri.proximaPregunta && !estadoMiri.respondioHoy) {
+        await enviarPreguntaDiaria(TARGET_NUMBER_RAW, "Miri");
+        estadoMiri.ultimaPregunta = ahora;
+        await estadoMiri.save();
+    }
+    
+    // Verificar para Luis
+    let estadoLuis = await PreguntaDiariaLuis.findOne({ numero: TARGET_NUMBER_2_RAW });
+    if (!estadoLuis) {
+        estadoLuis = await PreguntaDiariaLuis.create({
+            numero: TARGET_NUMBER_2_RAW,
+            proximaPregunta: generarHorarioPreguntaDiaria(),
+            respondioHoy: false
+        });
+    }
+    
+    if (ahora >= estadoLuis.proximaPregunta && !estadoLuis.respondioHoy) {
+        await enviarPreguntaDiaria(TARGET_NUMBER_2_RAW, "Luis");
+        estadoLuis.ultimaPregunta = ahora;
+        await estadoLuis.save();
+    }
+}
+
+/**
+ * Resetea el flag de "respondioHoy" a medianoche
+ */
+async function resetearEstadoDiario() {
+    const ahora = new Date();
+    const horaLocal = (ahora.getUTCHours() - 6 + 24) % 24;
+    
+    // Resetear a las 12:00 AM (medianoche) hora local
+    if (horaLocal === 0 && ahora.getUTCMinutes() < 2) { // Ventana de 2 minutos
+        await PreguntaDiariaMiri.updateOne(
+            { numero: TARGET_NUMBER_RAW },
+            { 
+                $set: { 
+                    respondioHoy: false,
+                    proximaPregunta: generarHorarioPreguntaDiaria()
+                }
+            }
+        );
+        
+        await PreguntaDiariaLuis.updateOne(
+            { numero: TARGET_NUMBER_2_RAW },
+            { 
+                $set: { 
+                    respondioHoy: false,
+                    proximaPregunta: generarHorarioPreguntaDiaria()
+                }
+            }
+        );
+        
+        console.log("🔄 Estados de diario emocional reseteados para nuevo día");
+    }
+}
+
+// ========== FIN DE FUNCIONES DE DIARIO EMOCIONAL ==========
 
 // --- TAREAS DE FONDO ---
 
@@ -489,8 +752,8 @@ async function generateProactiveMessage() {
     const prompt = `
         ${LIRA_PERSONALITY}
         ---
-        Acabas de despertar y quieres enviarle un mensaje proactivo a Miri para alegrar su día. 
-        Genera UN solo mensaje corto (1-3 frases).
+        Eres un asistente virtual y quieres enviarle un mensaje proactivo a Miri para alegrar su día. 
+        Genera UN solo mensaje corto.
         Puede ser:
         - Cariñoso (ej. "Solo pasaba a decirte que te quiero mucho...")
         - De ánimo (ej. "¡Tú puedes con todo hoy en la uni!...")
@@ -551,6 +814,9 @@ async function checkProactiveMessage() {
 async function backgroundTicker() {
     await checkReminders();
     await checkProactiveMessage();
+    await checkPreguntasDiarias(); // NUEVO
+    await resetearEstadoDiario(); // NUEVO
+    await checkResumenSemanal(); // NUEVO
 }
 
 // --- Evento de Mensaje ---
@@ -638,6 +904,52 @@ client.on('message', async msg => {
             return;
         }
 
+        // ========== NUEVO: DETECTAR RESPUESTA DE DIARIO EMOCIONAL ==========
+        if (esperandoRespuestaDiario[numeroCompleto]) {
+            console.log(`📔 Procesando respuesta de diario emocional de ${userName}`);
+            
+            // Analizar la emoción
+            const analisis = await analizarRespuestaEmocional(userMessageText);
+            
+            // Guardar en la base de datos
+            await guardarEntradaDiario(numeroCompleto, userMessageText, analisis);
+            
+            // Generar respuesta empática
+            const personality = isUser1 ? LIRA_PERSONALITY : LUIS_PERSONALITY;
+            const promptRespuesta = `
+            ${personality}
+            ---
+            ${userName} acaba de compartir contigo cómo se siente hoy. Su respuesta fue:
+            "${userMessageText}"
+            
+            El análisis indica que se siente ${analisis.sentimiento} con una intensidad de ${analisis.intensidad}/10.
+            
+            Responde de manera empática, comprensiva y cariñosa. Valida sus emociones y ofrece apoyo.
+            `;
+            
+            const result = await generateContentWithRetry(model, promptRespuesta);
+            const respuestaEmpatica = result.response.text();
+            
+            await client.sendMessage(msg.from, respuestaEmpatica);
+            console.log(`🤖 Respuesta empática enviada a ${userName}`);
+            
+            // Marcar como respondido
+            esperandoRespuestaDiario[numeroCompleto] = false;
+            
+            const PreguntaDiariaModel = isUser1 ? PreguntaDiariaMiri : PreguntaDiariaLuis;
+            await PreguntaDiariaModel.updateOne(
+                { numero: numeroCompleto },
+                { $set: { respondioHoy: true } }
+            );
+            
+            // Agregar al historial
+            addToHistory(numeroCompleto, 'user', userMessageText);
+            addToHistory(numeroCompleto, 'model', respuestaEmpatica);
+            
+            return; // Salir para no procesar como mensaje normal
+        }
+        // ========== FIN DE DETECCIÓN DE RESPUESTA DE DIARIO ==========
+
         addToHistory(numeroCompleto, 'user', userMessageText);
 
         // ROUTER
@@ -653,6 +965,8 @@ client.on('message', async msg => {
           - "RECUERDA_VER" 
           - "RECUERDA_ELIMINAR" 
           - "BORRAR_MEMORIA"
+          - "DIARIO_VER_ENTRADAS"
+          - "DIARIO_VER_RESUMEN"
           - "CHAT"
           
           Ejemplos:
@@ -667,6 +981,12 @@ client.on('message', async msg => {
           "cancela el recordatorio de las pastillas" -> {"intent": "RECUERDA_ELIMINAR", "que": "pastillas"}
           "borra el recordatorio de la junta" -> {"intent": "RECUERDA_ELIMINAR", "que": "junta"}
           "borra todos mis recordatorios" -> {"intent": "RECUERDA_ELIMINAR", "que": "todos"}
+          
+          // Ejemplos de Diario Emocional
+          "muéstrame mi diario" -> {"intent": "DIARIO_VER_ENTRADAS"}
+          "¿qué escribí en mi diario esta semana?" -> {"intent": "DIARIO_VER_ENTRADAS"}
+          "dame el resumen de mi semana" -> {"intent": "DIARIO_VER_RESUMEN"}
+          "¿cómo me sentí esta semana?" -> {"intent": "DIARIO_VER_RESUMEN"}
           
           "olvida lo que hablamos" -> {"intent": "BORRAR_MEMORIA"}
           "hola" -> {"intent": "CHAT"}
@@ -817,7 +1137,7 @@ client.on('message', async msg => {
                         return linea;
                     }).join('\n\n');
                     
-                    responseText = `Estos son tus recordatorios pendientes: ⏰\n\n${listaRecordatorios}`;
+                    responseText = `Claro que si!! Estos son tus recordatorios pendientes: ⏰\n\n${listaRecordatorios}`;
                 }
                 
                 await client.sendMessage(msg.from, responseText);
@@ -857,6 +1177,44 @@ client.on('message', async msg => {
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
+
+            // ========== NUEVO: CASOS DE DIARIO EMOCIONAL ==========
+            case "DIARIO_VER_ENTRADAS":
+                const DiarioModel = isUser1 ? DiarioMiri : DiarioLuis;
+                
+                // Obtener últimas 10 entradas
+                const entradas = await DiarioModel.find({ 
+                    numero: numeroCompleto,
+                    respuesta: { $not: { $regex: /^RESUMEN_ENVIADO_/ } }
+                })
+                .sort({ fecha: -1 })
+                .limit(10);
+                
+                if (entradas.length === 0) {
+                    responseText = "Aún no tienes entradas en tu diario emocional. 📔";
+                } else {
+                    const listaEntradas = entradas.map((e, i) => {
+                        const fechaLocal = e.fecha.toLocaleString('es-MX', { 
+                            timeZone: 'America/Mexico_City', 
+                            dateStyle: 'medium', 
+                            timeStyle: 'short' 
+                        });
+                        return `${i + 1}. *${fechaLocal}*\n   ${e.sentimiento} (${e.intensidad}/10)\n   "${e.respuesta}"`;
+                    }).join('\n\n');
+                    
+                    responseText = `📔 *Tus últimas entradas de diario:*\n\n${listaEntradas}`;
+                }
+                
+                await client.sendMessage(msg.from, responseText);
+                addToHistory(numeroCompleto, 'model', responseText);
+                break;
+
+            case "DIARIO_VER_RESUMEN":
+                await generarResumenSemanal(numeroCompleto, userName);
+                responseText = "Te acabo de enviar tu resumen semanal. 💙";
+                addToHistory(numeroCompleto, 'model', responseText);
+                break;
+            // ========== FIN DE CASOS DE DIARIO EMOCIONAL ==========
 
             case "CHAT":
             default:
