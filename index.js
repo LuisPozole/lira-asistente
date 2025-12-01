@@ -32,8 +32,8 @@ const diarioEmocionalSchema = new mongoose.Schema({
     numero: String,
     fecha: { type: Date, default: Date.now },
     respuesta: String,
-    sentimiento: String, // ej: "feliz", "triste", "ansioso", "neutral"
-    intensidad: Number // 1-10
+    sentimiento: String,
+    intensidad: Number
 });
 
 // --- NUEVO: Esquema para controlar preguntas diarias ---
@@ -68,6 +68,9 @@ const MAX_HISTORY_TURNS = 20;
 
 // --- NUEVO: Flag para detectar respuesta de diario ---
 let esperandoRespuestaDiario = {};
+
+// --- NUEVO: Flag para verificar si el cliente está listo ---
+let clientReady = false;
 
 function addToHistory(numero, role, contentText) {
     if (!userHistories[numero]) {
@@ -111,7 +114,7 @@ const dbName = "AilaBot";
 
 // --- Configuración de Gemini ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
 // --- Personalidades ---
 const LIRA_PERSONALITY = `
@@ -226,12 +229,12 @@ const LUIS_PERSONALITY = `
 `;
 
 const liraChatModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
+    model: "gemini-2.0-flash-exp",
     systemInstruction: LIRA_PERSONALITY,
 });
 
 const luisChatModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
+    model: "gemini-2.0-flash-exp",
     systemInstruction: LUIS_PERSONALITY,
 });
 
@@ -243,9 +246,16 @@ const client = new Client({
 });
 
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
-client.on('ready', () => console.log('✅ Conectado a WhatsApp (Sesión remota lista)'));
+client.on('ready', () => {
+    console.log('✅ Conectado a WhatsApp (Sesión remota lista)');
+    clientReady = true; // NUEVO: Marcar el cliente como listo
+});
 client.on('auth_failure', msg => console.error('❌ Error de autenticación:', msg));
-client.on('disconnected', reason => { console.log('⚠️ Cliente desconectado:', reason); client.initialize(); });
+client.on('disconnected', reason => { 
+    console.log('⚠️ Cliente desconectado:', reason); 
+    clientReady = false; // NUEVO: Marcar el cliente como no listo
+    client.initialize(); 
+});
 
 // --- Funciones Auxiliares ---
 function cleanGeminiJson(rawText) {
@@ -368,7 +378,7 @@ function parsearFechaConZonaHoraria(cuandoTexto) {
  * @returns {Date|null} - Nueva fecha en UTC o null si falla
  */
 function reprogramarRecordatorioDiario(recordatorio) {
-    if (!recordatorio.horaOriginal === null || recordatorio.minutoOriginal === null) {
+    if (recordatorio.horaOriginal === null || recordatorio.minutoOriginal === null) {
         console.error("No se puede reprogramar: faltan horaOriginal/minutoOriginal");
         return null;
     }
@@ -405,12 +415,10 @@ function generarHorarioPreguntaDiaria() {
     const proximoDia = new Date(ahora);
     proximoDia.setDate(ahora.getDate() + 1);
     
-    // Hora entre 8 PM (20) y 12 AM (24/0) -> en hora local
-    const horaLocal = Math.floor(Math.random() * 4) + 20; // 20, 21, 22, 23
+    const horaLocal = Math.floor(Math.random() * 4) + 20;
     const minutoLocal = Math.floor(Math.random() * 60);
     
-    // Convertir a UTC
-    const horaUTC = (horaLocal + 6) % 24; // UTC-6 a UTC
+    const horaUTC = (horaLocal + 6) % 24;
     
     proximoDia.setUTCHours(horaUTC, minutoLocal, 0, 0);
     
@@ -423,6 +431,12 @@ function generarHorarioPreguntaDiaria() {
  * @param {string} userName - "Miri" o "Luis"
  */
 async function enviarPreguntaDiaria(numeroCompleto, userName) {
+    // NUEVO: Verificar si el cliente está listo antes de enviar
+    if (!clientReady) {
+        console.log(`⚠️ Cliente no está listo. Postponiendo pregunta diaria para ${userName}`);
+        return;
+    }
+
     const preguntas = [
         "¿Cómo te sientes hoy? 💭",
         "¿Cómo estuvo tu día? ✨",
@@ -433,11 +447,14 @@ async function enviarPreguntaDiaria(numeroCompleto, userName) {
     
     const pregunta = preguntas[Math.floor(Math.random() * preguntas.length)];
     
-    await client.sendMessage(numeroCompleto, pregunta);
-    console.log(`📔 Pregunta diaria enviada a ${userName}`);
-    
-    // Marcar que está esperando respuesta
-    esperandoRespuestaDiario[numeroCompleto] = true;
+    try {
+        await client.sendMessage(numeroCompleto, pregunta);
+        console.log(`📔 Pregunta diaria enviada a ${userName}`);
+        
+        esperandoRespuestaDiario[numeroCompleto] = true;
+    } catch (error) {
+        console.error(`❌ Error al enviar pregunta diaria a ${userName}:`, error.message);
+    }
 }
 
 /**
@@ -496,9 +513,14 @@ async function guardarEntradaDiario(numeroCompleto, respuesta, analisis) {
  * @param {string} userName - "Miri" o "Luis"
  */
 async function generarResumenSemanal(numeroCompleto, userName) {
+    // NUEVO: Verificar si el cliente está listo
+    if (!clientReady) {
+        console.log(`⚠️ Cliente no está listo. Postponiendo resumen semanal para ${userName}`);
+        return;
+    }
+
     const DiarioModel = (numeroCompleto === TARGET_NUMBER_RAW) ? DiarioMiri : DiarioLuis;
     
-    // Obtener entradas de los últimos 7 días
     const hace7Dias = new Date();
     hace7Dias.setDate(hace7Dias.getDate() - 7);
     
@@ -508,11 +530,14 @@ async function generarResumenSemanal(numeroCompleto, userName) {
     }).sort({ fecha: 1 });
     
     if (entradas.length === 0) {
-        await client.sendMessage(numeroCompleto, "No tienes suficientes entradas en tu diario esta semana para generar un resumen. 📔");
+        try {
+            await client.sendMessage(numeroCompleto, "No tienes suficientes entradas en tu diario esta semana para generar un resumen. 📔");
+        } catch (error) {
+            console.error(`❌ Error al enviar mensaje a ${userName}:`, error.message);
+        }
         return;
     }
     
-    // Preparar datos para el análisis
     const resumenEntradas = entradas.map(e => {
         const fechaLocal = e.fecha.toLocaleString('es-MX', { 
             timeZone: 'America/Mexico_City',
@@ -550,7 +575,11 @@ async function generarResumenSemanal(numeroCompleto, userName) {
         console.log(`📊 Resumen semanal enviado a ${userName}`);
     } catch (error) {
         console.error("Error al generar resumen semanal:", error);
-        await client.sendMessage(numeroCompleto, "Tuve un problema al generar tu resumen semanal. Lo intentaré de nuevo más tarde. 💙");
+        try {
+            await client.sendMessage(numeroCompleto, "Tuve un problema al generar tu resumen semanal. Lo intentaré de nuevo más tarde. 💙");
+        } catch (sendError) {
+            console.error(`❌ Error al enviar mensaje de error a ${userName}:`, sendError.message);
+        }
     }
 }
 
@@ -558,17 +587,17 @@ async function generarResumenSemanal(numeroCompleto, userName) {
  * Verifica si es sábado y si debe enviar el resumen semanal
  */
 async function checkResumenSemanal() {
+    if (!clientReady) return; // NUEVO: No ejecutar si el cliente no está listo
+
     const ahora = new Date();
-    const diaSemana = ahora.getDay(); // 0 = Domingo, 6 = Sábado
+    const diaSemana = ahora.getDay();
     
-    if (diaSemana !== 6) return; // Solo los sábados
+    if (diaSemana !== 6) return;
     
-    const horaLocal = (ahora.getUTCHours() - 6 + 24) % 24; // Convertir a hora local
+    const horaLocal = (ahora.getUTCHours() - 6 + 24) % 24;
     
-    // Enviar el resumen entre 10 AM y 2 PM hora local
     if (horaLocal < 10 || horaLocal >= 14) return;
     
-    // Verificar si ya se enviaron los resúmenes hoy
     const hoy = new Date();
     hoy.setHours(0, 0, 0, 0);
     
@@ -586,7 +615,6 @@ async function checkResumenSemanal() {
     
     if (!resumenMiriHoy) {
         await generarResumenSemanal(TARGET_NUMBER_RAW, "Miri");
-        // Marcar como enviado
         await DiarioMiri.create({
             numero: TARGET_NUMBER_RAW,
             fecha: new Date(),
@@ -598,7 +626,6 @@ async function checkResumenSemanal() {
     
     if (!resumenLuisHoy) {
         await generarResumenSemanal(TARGET_NUMBER_2_RAW, "Luis");
-        // Marcar como enviado
         await DiarioLuis.create({
             numero: TARGET_NUMBER_2_RAW,
             fecha: new Date(),
@@ -613,9 +640,10 @@ async function checkResumenSemanal() {
  * Verifica y envía las preguntas diarias del diario emocional
  */
 async function checkPreguntasDiarias() {
+    if (!clientReady) return; // NUEVO: No ejecutar si el cliente no está listo
+
     const ahora = new Date();
     
-    // Verificar para Miri
     let estadoMiri = await PreguntaDiariaMiri.findOne({ numero: TARGET_NUMBER_RAW });
     if (!estadoMiri) {
         estadoMiri = await PreguntaDiariaMiri.create({
@@ -631,7 +659,6 @@ async function checkPreguntasDiarias() {
         await estadoMiri.save();
     }
     
-    // Verificar para Luis
     let estadoLuis = await PreguntaDiariaLuis.findOne({ numero: TARGET_NUMBER_2_RAW });
     if (!estadoLuis) {
         estadoLuis = await PreguntaDiariaLuis.create({
@@ -655,8 +682,7 @@ async function resetearEstadoDiario() {
     const ahora = new Date();
     const horaLocal = (ahora.getUTCHours() - 6 + 24) % 24;
     
-    // Resetear a las 12:00 AM (medianoche) hora local
-    if (horaLocal === 0 && ahora.getUTCMinutes() < 2) { // Ventana de 2 minutos
+    if (horaLocal === 0 && ahora.getUTCMinutes() < 2) {
         await PreguntaDiariaMiri.updateOne(
             { numero: TARGET_NUMBER_RAW },
             { 
@@ -685,597 +711,591 @@ async function resetearEstadoDiario() {
 
 // --- TAREAS DE FONDO ---
 
-// CORREGIDO: Check de Recordatorios
 async function checkReminders() {
+    if (!clientReady) return; // NUEVO: No ejecutar si el cliente no está listo
+
     try {
-        const ahora = new Date();
-        
-        const pendientesMiri = await Recordatorios.find({ fecha: { $lte: ahora }, enviado: false });
-        const pendientesLuis = await LuisRecordatorios.find({ fecha: { $lte: ahora }, enviado: false });
-        
-        const pendientes = [...pendientesMiri, ...pendientesLuis];
+        constahora = new Date();
+    const pendientesMiri = await Recordatorios.find({ fecha: { $lte: ahora }, enviado: false });
+    const pendientesLuis = await LuisRecordatorios.find({ fecha: { $lte: ahora }, enviado: false });
+    
+    const pendientes = [...pendientesMiri, ...pendientesLuis];
 
-        if (pendientes.length === 0) return;
-        
-        console.log(`📢 Enviando ${pendientes.length} recordatorio(s)...`);
+    if (pendientes.length === 0) return;
+    
+    console.log(`📢 Enviando ${pendientes.length} recordatorio(s)...`);
 
-        for (const recordatorio of pendientes) {
-            let ModeloRecordatorioUpdate;
-            if (recordatorio.numero === TARGET_NUMBER_RAW) {
-                ModeloRecordatorioUpdate = Recordatorios;
-            } else if (recordatorio.numero === TARGET_NUMBER_2_RAW) {
-                ModeloRecordatorioUpdate = LuisRecordatorios;
-            } else {
-                continue;
-            }
-
-            // Marcar como enviado
-            await ModeloRecordatorioUpdate.updateOne({ _id: recordatorio._id }, { $set: { enviado: true } });
-
-            // Enviar el mensaje
-            await client.sendMessage(recordatorio.numero, `¡RECORDATORIO! ⏰\n\n${recordatorio.texto}`);
-            
-            // CORREGIDO: Lógica de reprogramación
-            if (recordatorio.isRecurring) {
-                console.log(`♻️ Reprogramando recordatorio diario: ${recordatorio.texto}`);
-                
-                const proximaFecha = reprogramarRecordatorioDiario(recordatorio);
-                
-                if (proximaFecha) {
-                    await ModeloRecordatorioUpdate.updateOne(
-                        { _id: recordatorio._id },
-                        { $set: { fecha: proximaFecha, enviado: false } }
-                    );
-                    
-                    // Mostrar en hora local para el log
-                    const fechaLocal = proximaFecha.toLocaleString('es-MX', { 
-                        timeZone: 'America/Mexico_City', 
-                        dateStyle: 'medium', 
-                        timeStyle: 'short' 
-                    });
-                    console.log(`✅ Reprogramado para: ${fechaLocal}`);
-                } else {
-                    console.error(`❌ No se pudo reprogramar el recordatorio: ${recordatorio.texto}`);
-                }
-            } else {
-                console.log(`✅ Recordatorio único completado: ${recordatorio.texto}`);
-            }
-        }
-    } catch (error) {
-        console.error("❌ Error en 'checkReminders':", error);
-    }
-}
-
-// Mensajes Proactivos (sin cambios)
-async function generateProactiveMessage() { 
-    console.log("💬 Generando mensaje proactivo para Miri...");
-    const prompt = `
-        ${LIRA_PERSONALITY}
-        ---
-        Eres un asistente virtual y quieres enviarle un mensaje proactivo a Miri para alegrar su día. 
-        Genera UN solo mensaje corto.
-        Puede ser:
-        - Cariñoso (ej. "Solo pasaba a decirte que te quiero mucho...")
-        - De ánimo (ej. "¡Tú puedes con todo hoy en la uni!...")
-        - Gracioso (ej. "Oye, ¿sabías que las nutrias...?")
-        - Un cumplido (ej. "Recordé tu sonrisa y se me alegró el día...")
-        
-        Sé creativa y natural, como Lira.
-        Tu respuesta:
-    `;
-    const result = await generateContentWithRetry(model, prompt);
-    return result.response.text();
-}
-
-function getRandomTimeTomorrow() { 
-    const manana = new Date();
-    manana.setDate(manana.getDate() + 1);
-    const hour = Math.floor(Math.random() * (22 - 5 + 1)) + 5; 
-    const minute = Math.floor(Math.random() * 60);
-    manana.setHours(hour, minute, 0, 0);
-    return manana;
-}
-
-async function scheduleNextMessage() { 
-    const state = await DailyMessageState.findOneAndUpdate(
-        { singletonId: 'main' },
-        { $setOnInsert: { singletonId: 'main' } },
-        { upsert: true, new: true }
-    );
-    state.nextScheduledTime = getRandomTimeTomorrow();
-    await state.save();
-    console.log(`💌 Próximo mensaje proactivo (para Miri) programado para: ${state.nextScheduledTime.toLocaleString('es-MX')}`);
-}
-
-async function checkProactiveMessage() { 
-    try {
-        let state = await DailyMessageState.findOne({ singletonId: 'main' });
-        if (!state) {
-            console.log("Iniciando programador de mensajes proactivos (para Miri)...");
-            await scheduleNextMessage();
-            return;
-        }
-        if (new Date() >= state.nextScheduledTime) {
-            console.log("¡Hora de enviar mensaje proactivo a Miri!");
-            const message = await generateProactiveMessage();
-            if (TARGET_NUMBER_RAW) {
-                await client.sendMessage(TARGET_NUMBER_RAW, message);
-                console.log("💌 Mensaje proactivo enviado a Miri.");
-            } else {
-                console.error("No se pudo enviar mensaje proactivo: TARGET_NUMBER no está en .env");
-            }
-            await scheduleNextMessage();
-        }
-    } catch (error) {
-        console.error("❌ Error en 'checkProactiveMessage':", error);
-    }
-}
-
-async function backgroundTicker() {
-    await checkReminders();
-    await checkProactiveMessage();
-    await checkPreguntasDiarias(); // NUEVO
-    await resetearEstadoDiario(); // NUEVO
-    await checkResumenSemanal(); // NUEVO
-}
-
-// --- Evento de Mensaje ---
-client.on('message', async msg => {
-    try {
-        const numeroCompleto = msg.from;
-        const numeroLimpio = numeroCompleto.replace('@c.us', '');
-        
-        const isUser1 = (numeroCompleto === TARGET_NUMBER_RAW);
-        const isUser2 = (numeroCompleto === TARGET_NUMBER_2_RAW);
-        
-        console.log(`📩 Mensaje recibido de ${numeroLimpio}`);
-
-        if (!isUser1 && !isUser2) {
-            console.log(`Ignorando mensaje de un número no autorizado: ${numeroLimpio}`);
-            return;
-        }
-
-        const userName = isUser1 ? "Miri" : "Luis";
-        console.log(`-> Mensaje de: ${userName}`);
-
-        const ListaModel = isUser1 ? Listas : LuisListas;
-        const RecordatorioModel = isUser1 ? Recordatorios : LuisRecordatorios;
-
-        const isAudio = (msg.type === 'audio' || msg.type === 'ptt');
-        const isText = (msg.type === 'chat');
-        const isImage = (msg.type === 'image');
-
-        let userMessageText = "";
-
-        // IMÁGENES
-        if (isImage) {
-            console.log(`-> Tipo IMAGE. Descargando media...`);
-            const media = await msg.downloadMedia();
-            if (!media || !media.data) { return; }
-
-            const caption = msg.body;
-            
-            let imageChatPrompt = "";
-            if (isUser1) {
-                imageChatPrompt = `${LIRA_PERSONALITY}\n---\nMiri (tu novia) te acaba de enviar una imagen. `;
-                if (caption) {
-                    imageChatPrompt += `El pie de foto dice: "${caption}".\n\nHaz un comentario amable y cariñosa sobre la imagen y su texto.`;
-                } else {
-                    imageChatPrompt += `No escribió ningún pie de foto.\n\nHaz un comentario amable y cariñosa sobre lo que ves en la imagen.`;
-                }
-            } else {
-                imageChatPrompt = `${LUIS_PERSONALITY}\n---\nLuis (tu creador) te acaba de enviar una imagen. `;
-                if (caption) {
-                    imageChatPrompt += `El pie de foto dice: "${caption}".\n\nHaz un comentario sobre la imagen y su texto.`;
-                } else {
-                    imageChatPrompt += `No escribió ningún pie de foto.\n\nHaz un comentario sobre lo que ves en la imagen.`;
-                }
-            }
-            
-            const imagePayload = [ { text: imageChatPrompt }, { inlineData: { mimeType: media.mimetype, data: media.data } } ];
-            console.log(`💬 Enviando a ${userName} (imagen)...`);
-            
-            const result = await generateContentWithRetry(model, { contents: [{ parts: imagePayload }] });
-            const chatText = result.response.text();
-            
-            console.log(`🤖 Respuesta de ${userName} (imagen): ${chatText}`);
-            await client.sendMessage(msg.from, chatText);
-            
-            addToHistory(numeroCompleto, 'user', `[IMAGEN] ${caption || ''}`);
-            addToHistory(numeroCompleto, 'model', chatText);
-            return;
-        }
-
-        // TEXTO Y AUDIO
-        if (isText) {
-            userMessageText = msg.body;
-            console.log(`-> Tipo TEXTO: ${userMessageText}`);
-        } else if (isAudio) {
-            console.log(`-> Tipo ${msg.type.toUpperCase()}. Transcribiendo...`);
-            const media = await msg.downloadMedia();
-            const audioParts = [{ inlineData: { mimeType: media.mimetype, data: media.data } }];
-            const transcodeRequest = [{ text: "Transcribe el siguiente audio a texto:" }, ...audioParts];
-            
-            const transcodeResult = await generateContentWithRetry(model, { contents: [{ parts: transcodeRequest }] });
-            userMessageText = transcodeResult.response.text();
-            console.log(`-> Transcripción: ${userMessageText}`);
+    for (const recordatorio of pendientes) {
+        let ModeloRecordatorioUpdate;
+        if (recordatorio.numero === TARGET_NUMBER_RAW) {
+            ModeloRecordatorioUpdate = Recordatorios;
+        } else if (recordatorio.numero === TARGET_NUMBER_2_RAW) {
+            ModeloRecordatorioUpdate = LuisRecordatorios;
         } else {
-            console.log(`-> Tipo ${msg.type}. Ignorando.`);
-            return;
+            continue;
         }
 
-        // ========== NUEVO: DETECTAR RESPUESTA DE DIARIO EMOCIONAL ==========
-        if (esperandoRespuestaDiario[numeroCompleto]) {
-            console.log(`📔 Procesando respuesta de diario emocional de ${userName}`);
-            
-            // Analizar la emoción
-            const analisis = await analizarRespuestaEmocional(userMessageText);
-            
-            // Guardar en la base de datos
-            await guardarEntradaDiario(numeroCompleto, userMessageText, analisis);
-            
-            // Generar respuesta empática
-            const personality = isUser1 ? LIRA_PERSONALITY : LUIS_PERSONALITY;
-            const promptRespuesta = `
-            ${personality}
-            ---
-            ${userName} acaba de compartir contigo cómo se siente hoy. Su respuesta fue:
-            "${userMessageText}"
-            
-            El análisis indica que se siente ${analisis.sentimiento} con una intensidad de ${analisis.intensidad}/10.
-            
-            Responde de manera empática, comprensiva y cariñosa. Valida sus emociones y ofrece apoyo.
-            `;
-            
-            const result = await generateContentWithRetry(model, promptRespuesta);
-            const respuestaEmpatica = result.response.text();
-            
-            await client.sendMessage(msg.from, respuestaEmpatica);
-            console.log(`🤖 Respuesta empática enviada a ${userName}`);
-            
-            // Marcar como respondido
-            esperandoRespuestaDiario[numeroCompleto] = false;
-            
-            const PreguntaDiariaModel = isUser1 ? PreguntaDiariaMiri : PreguntaDiariaLuis;
-            await PreguntaDiariaModel.updateOne(
-                { numero: numeroCompleto },
-                { $set: { respondioHoy: true } }
-            );
-            
-            // Agregar al historial
-            addToHistory(numeroCompleto, 'user', userMessageText);
-            addToHistory(numeroCompleto, 'model', respuestaEmpatica);
-            
-            return; // Salir para no procesar como mensaje normal
+        await ModeloRecordatorioUpdate.updateOne({ _id: recordatorio._id }, { $set: { enviado: true } });
+
+        try {
+            await client.sendMessage(recordatorio.numero, `¡RECORDATORIO! ⏰\n\n${recordatorio.texto}`);
+        } catch (error) {
+            console.error(`❌ Error al enviar recordatorio:`, error.message);
+            continue;
         }
-        // ========== FIN DE DETECCIÓN DE RESPUESTA DE DIARIO ==========
-
-        addToHistory(numeroCompleto, 'user', userMessageText);
-
-        // ROUTER
-        const historyForRouter = getHistory(numeroCompleto);
         
-        const routerPromptText = `
-          Eres un clasificador de intenciones. Analiza el "MENSAJE NUEVO".
-          Responde SÓLO con un objeto JSON.
-          
-          Intenciones:
-          - "LISTA_AGREGAR", "LISTA_VER", "LISTA_BORRAR_ITEM", "LISTA_ELIMINAR", "LISTAS_VER_TODAS"
-          - "RECUERDA_CREAR"
-          - "RECUERDA_VER" 
-          - "RECUERDA_ELIMINAR" 
-          - "BORRAR_MEMORIA"
-          - "DIARIO_VER_ENTRADAS"
-          - "DIARIO_VER_RESUMEN"
-          - "CHAT"
-          
-          Ejemplos:
-          "añade leche al super" -> {"intent": "LISTA_AGREGAR", "nombreLista": "super", "item": "leche"}
-          
-          // Ejemplos de Recordatorios
-          "recuérdame que mañana tengo cita a las 10am" -> {"intent": "RECUERDA_CREAR", "que": "tengo cita", "cuando": "mañana a las 10am"}
-          "recuérdame tomar mis pastillas todos los dias a las 8 am y las 8 pm" -> {"intent": "RECUERDA_CREAR", "que": "tomar mis pastillas", "cuando": "todos los dias a las 8 am y las 8 pm"}
-          
-          "¿qué recordatorios tengo?" -> {"intent": "RECUERDA_VER"}
-          "enséñame mis pendientes" -> {"intent": "RECUERDA_VER"}
-          "cancela el recordatorio de las pastillas" -> {"intent": "RECUERDA_ELIMINAR", "que": "pastillas"}
-          "borra el recordatorio de la junta" -> {"intent": "RECUERDA_ELIMINAR", "que": "junta"}
-          "borra todos mis recordatorios" -> {"intent": "RECUERDA_ELIMINAR", "que": "todos"}
-          
-          // Ejemplos de Diario Emocional
-          "muéstrame mi diario" -> {"intent": "DIARIO_VER_ENTRADAS"}
-          "¿qué escribí en mi diario esta semana?" -> {"intent": "DIARIO_VER_ENTRADAS"}
-          "dame el resumen de mi semana" -> {"intent": "DIARIO_VER_RESUMEN"}
-          "¿cómo me sentí esta semana?" -> {"intent": "DIARIO_VER_RESUMEN"}
-          
-          "olvida lo que hablamos" -> {"intent": "BORRAR_MEMORIA"}
-          "hola" -> {"intent": "CHAT"}
-
-          nota: considera eufemismos como "medio dia" (12 pm)
-
-          ---
-          HISTORIAL DE CONTEXTO (para ayudarte a entender el mensaje nuevo):
-          ${historyForRouter.slice(0, -1).map(h => `${h.role}: ${h.parts[0].text}`).join('\n')}
-          ---
-          MENSAJE NUEVO:
-          "${userMessageText}"
-          ---
-          JSON:
-        `;
-
-        console.log(`💬 Clasificando intención para ${userName} (con historial)...`);
-        const result = await generateContentWithRetry(model, routerPromptText);
-        const action = cleanGeminiJson(result.response.text());
-        console.log(`🤖 Acción decidida por Gemini para ${userName}:`, action);
-
-        let responseText = "";
-
-        // SWITCH DE ACCIONES
-        switch (action.intent) {
+        if (recordatorio.isRecurring) {
+            console.log(`♻️ Reprogramando recordatorio diario: ${recordatorio.texto}`);
             
-            case "BORRAR_MEMORIA":
-                clearHistory(numeroCompleto);
-                responseText = "¡Listo! Empecemos de cero. ¿De qué quieres hablar?";
-                await client.sendMessage(msg.from, responseText);
-                break; 
-
-            case "LISTA_AGREGAR":
-                await ListaModel.updateOne({ numero: msg.from, nombre: action.nombreLista }, { $push: { items: action.item } }, { upsert: true });
-                responseText = `"${action.item}" añadido a tu lista "${action.nombreLista}".`;
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
+            const proximaFecha = reprogramarRecordatorioDiario(recordatorio);
+            
+            if (proximaFecha) {
+                await ModeloRecordatorioUpdate.updateOne(
+                    { _id: recordatorio._id },
+                    { $set: { fecha: proximaFecha, enviado: false } }
+                );
                 
-            case "LISTA_VER":
-                const lista = await ListaModel.findOne({ numero: msg.from, nombre: action.nombreLista });
-                if (lista && lista.items && lista.items.length > 0) {
-                    responseText = `📝 Tu lista "${action.nombreLista}":\n${lista.items.map((it, i) => `${i + 1}. ${it}`).join('\n')}`;
-                } else { responseText = `Tu lista "${action.nombreLista}" está vacía o no existe.`; }
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
-                
-            case "LISTA_BORRAR_ITEM":
-                await ListaModel.updateOne({ numero: msg.from, nombre: action.nombreLista }, { $pull: { items: action.item } });
-                responseText = `"${action.item}" borrado de la lista "${action.nombreLista}".`;
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
-                
-            case "LISTA_ELIMINAR":
-                await ListaModel.deleteOne({ numero: msg.from, nombre: action.nombreLista });
-                responseText = `Lista "${action.nombreLista}" eliminada por completo.`;
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
-                
-            case "LISTAS_VER_TODAS":
-                const todas = await ListaModel.distinct("nombre", { numero: msg.from });
-                if (todas.length > 0) {
-                    responseText = `Tus listas activas:\n- ${todas.join('\n- ')}`;
-                } else { responseText = "No tienes ninguna lista creada."; }
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
-
-            // ========== CORREGIDO: RECUERDA_CREAR ==========
-            case "RECUERDA_CREAR":
-                const que = action.que;
-                const cuando = action.cuando;
-                
-                if (!que || !cuando) {
-                    responseText = "No entendí bien tu recordatorio. Necesito saber *qué* quieres que te recuerde y *cuándo*.";
-                    await client.sendMessage(msg.from, responseText);
-                    addToHistory(numeroCompleto, 'model', responseText);
-                    break;
-                }
-
-                console.log(`⏰ Creando recordatorio: "${que}" para "${cuando}"`);
-                
-                // Detectar si es recurrente
-                const isRecurring = /todos los d[ií]as?|cada d[ií]a|diario|diariamente|cada (lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)|semanalmente|cada semana/i.test(cuando);
-                
-                // USAR LA NUEVA FUNCIÓN DE PARSEO
-                const resultadoParseo = parsearFechaConZonaHoraria(cuando);
-                
-                if (!resultadoParseo) {
-                    responseText = `No entendí la fecha para tu recordatorio: "${cuando}". ¿Podrías ser más específica?`;
-                    await client.sendMessage(msg.from, responseText);
-                    addToHistory(numeroCompleto, 'model', responseText);
-                    break;
-                }
-                
-                const { fecha, hora, minuto, textoOriginal } = resultadoParseo;
-                
-                // Crear el recordatorio con los nuevos campos
-                await RecordatorioModel.create({
-                    numero: msg.from,
-                    texto: que,
-                    fecha: fecha, // Ya está en UTC correctamente
-                    enviado: false,
-                    isRecurring: isRecurring,
-                    recurrenceRuleText: isRecurring ? textoOriginal : null,
-                    horaOriginal: hora, // Guardamos la hora original del usuario
-                    minutoOriginal: minuto // Guardamos el minuto original
-                });
-                
-                // Mostrar confirmación en hora local
-                const fechaLocal = fecha.toLocaleString('es-MX', { 
+                const fechaLocal = proximaFecha.toLocaleString('es-MX', { 
                     timeZone: 'America/Mexico_City', 
                     dateStyle: 'medium', 
                     timeStyle: 'short' 
                 });
-                
-                responseText = `¡Anotado! Te recordaré "${que}" el ${fechaLocal}`;
-                
-                if (isRecurring) {
-                    responseText += `\n(Lo programaré recurrentemente ^^)`;
-                }
-                
-                console.log(`✅ Recordatorio creado: ${que} -> ${fechaLocal} (UTC: ${fecha.toISOString()})`);
-                
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
+                console.log(`✅ Reprogramado para: ${fechaLocal}`);
+            } else {
+                console.error(`❌ No se pudo reprogramar el recordatorio: ${recordatorio.texto}`);
+            }
+        } else {
+            console.log(`✅ Recordatorio único completado: ${recordatorio.texto}`);
+        }
+    }
+} catch (error) {
+    console.error("❌ Error en 'checkReminders':", error);
+}
+}
+async function generateProactiveMessage() {
+console.log("💬 Generando mensaje proactivo para Miri...");
+const prompt = `
+${LIRA_PERSONALITY}
+---
+Eres un asistente virtual y quieres enviarle un mensaje proactivo a Miri para alegrar su día.
+Genera UN solo mensaje corto.
+Puede ser:
+- Cariñoso (ej. "Solo pasaba a decirte que te quiero mucho...")
+- De ánimo (ej. "¡Tú puedes con todo hoy en la uni!...")
+- Gracioso (ej. "Oye, ¿sabías que las nutrias...?")
+- Un cumplido (ej. "Recordé tu sonrisa y se me alegró el día...")
+    Sé creativa y natural, como Lira.
+    Tu respuesta:
+`;
+const result = await generateContentWithRetry(model, prompt);
+return result.response.text();
+}
+function getRandomTimeTomorrow() {
+const manana = new Date();
+manana.setDate(manana.getDate() + 1);
+const hour = Math.floor(Math.random() * (22 - 5 + 1)) + 5;
+const minute = Math.floor(Math.random() * 60);
+manana.setHours(hour, minute, 0, 0);
+return manana;
+}
+async function scheduleNextMessage() {
+const state = await DailyMessageState.findOneAndUpdate(
+{ singletonId: 'main' },
+{ $setOnInsert: { singletonId: 'main' } },
+{ upsert: true, new: true }
+);
+state.nextScheduledTime = getRandomTimeTomorrow();
+await state.save();
+console.log(💌 Próximo mensaje proactivo (para Miri) programado para: ${state.nextScheduledTime.toLocaleString('es-MX')});
+}
+async function checkProactiveMessage() {
+if (!clientReady) return; // NUEVO: No ejecutar si el cliente no está listo
+try {
+    let state = await DailyMessageState.findOne({ singletonId: 'main' });
+    if (!state) {
+        console.log("Iniciando programador de mensajes proactivos (para Miri)...");
+        await scheduleNextMessage();
+        return;
+    }
+    if (new Date() >= state.nextScheduledTime) {
+        console.log("¡Hora de enviar mensaje proactivo a Miri!");
+        const message = await generateProactiveMessage();
+        if (TARGET_NUMBER_RAW) {
+            try {
+                await client.sendMessage(TARGET_NUMBER_RAW, message);
+                console.log("💌 Mensaje proactivo enviado a Miri.");
+            } catch (error) {
+                console.error("❌ Error al enviar mensaje proactivo:", error.message);
+            }
+        } else {
+            console.error("No se pudo enviar mensaje proactivo: TARGET_NUMBER no está en .env");
+        }
+        await scheduleNextMessage();
+    }
+} catch (error) {
+    console.error("❌ Error en 'checkProactiveMessage':", error);
+}
+}
+async function backgroundTicker() {
+await checkReminders();
+await checkProactiveMessage();
+await checkPreguntasDiarias();
+await resetearEstadoDiario();
+await checkResumenSemanal();
+}
+// --- Evento de Mensaje ---
+client.on('message', async msg => {
+try {
+const numeroCompleto = msg.from;
+const numeroLimpio = numeroCompleto.replace('@c.us', '');
+    const isUser1 = (numeroCompleto === TARGET_NUMBER_RAW);
+    const isUser2 = (numeroCompleto === TARGET_NUMBER_2_RAW);
+    
+    console.log(`📩 Mensaje recibido de ${numeroLimpio}`);
 
-            case "RECUERDA_VER":
-                const pendientes = await RecordatorioModel.find({ numero: msg.from, enviado: false }).sort({ fecha: 1 });
-                
-                if (pendientes.length === 0) {
-                    responseText = "No tienes ningún recordatorio pendiente. ^^";
-                } else {
-                    const listaRecordatorios = pendientes.map((r, i) => {
-                        const fechaLocal = r.fecha.toLocaleString('es-MX', { 
-                            timeZone: 'America/Mexico_City', 
-                            dateStyle: 'full', 
-                            timeStyle: 'short' 
-                        });
-                        let linea = `${i + 1}. "${r.texto}"\n    └─ ${fechaLocal}`;
-                        if (r.isRecurring) {
-                            linea += " (recurrente)";
-                        }
-                        return linea;
-                    }).join('\n\n');
-                    
-                    responseText = `Claro que si!! Estos son tus recordatorios pendientes: ⏰\n\n${listaRecordatorios}`;
-                }
-                
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
+    if (!isUser1 && !isUser2) {
+        console.log(`Ignorando mensaje de un número no autorizado: ${numeroLimpio}`);
+        return;
+    }
+
+    const userName = isUser1 ? "Miri" : "Luis";
+    console.log(`-> Mensaje de: ${userName}`);
+
+    const ListaModel = isUser1 ? Listas : LuisListas;
+    const RecordatorioModel = isUser1 ? Recordatorios : LuisRecordatorios;
+
+    const isAudio = (msg.type === 'audio' || msg.type === 'ptt');
+    const isText = (msg.type === 'chat');
+    const isImage = (msg.type === 'image');
+
+    let userMessageText = "";
+
+    // IMÁGENES
+    if (isImage) {
+        console.log(`-> Tipo IMAGE. Descargando media...`);
+        const media = await msg.downloadMedia();
+        if (!media || !media.data) { return; }
+
+        const caption = msg.body;
+        
+        let imageChatPrompt = "";
+        if (isUser1) {
+            imageChatPrompt = `${LIRA_PERSONALITY}\n---\nMiri (tu novia) te acaba de enviar una imagen. `;
+            if (caption) {
+                imageChatPrompt += `El pie de foto dice: "${caption}".\n\nHaz un comentario amable y cariñosa sobre la imagen y su texto.`;
+            } else {
+                imageChatPrompt += `No escribió ningún pie de foto.\n\nHaz un comentario amable y cariñosa sobre lo que ves en la imagen.`;
+            }
+        } else {
+            imageChatPrompt = `${LUIS_PERSONALITY}\n---\nLuis (tu creador) te acaba de enviar una imagen. `;
+            if (caption) {
+                imageChatPrompt += `El pie de foto dice: "${caption}".\n\nHaz un comentario sobre la imagen y su texto.`;
+            } else {
+                imageChatPrompt += `No escribió ningún pie de foto.\n\nHaz un comentario sobre lo que ves en la imagen.`;
+            }
+        }
+        
+        const imagePayload = [ { text: imageChatPrompt }, { inlineData: { mimeType: media.mimetype, data: media.data } } ];
+        console.log(`💬 Enviando a ${userName} (imagen)...`);
+        
+        const result = await generateContentWithRetry(model, { contents: [{ parts: imagePayload }] });
+        const chatText = result.response.text();
+        
+        console.log(`🤖 Respuesta de ${userName} (imagen): ${chatText}`);
+        await client.sendMessage(msg.from, chatText);
+        
+        addToHistory(numeroCompleto, 'user', `[IMAGEN] ${caption || ''}`);
+        addToHistory(numeroCompleto, 'model', chatText);
+        return;
+    }
+
+    // TEXTO Y AUDIO
+    if (isText) {
+        userMessageText = msg.body;
+        console.log(`-> Tipo TEXTO: ${userMessageText}`);
+    } else if (isAudio) {
+        console.log(`-> Tipo ${msg.type.toUpperCase()}. Transcribiendo...`);
+        const media = await msg.downloadMedia();
+        const audioParts = [{ inlineData: { mimeType: media.mimetype, data: media.data } }];
+        const transcodeRequest = [{ text: "Transcribe el siguiente audio a texto:" }, ...audioParts];
+        
+        const transcodeResult = await generateContentWithRetry(model, { contents: [{ parts: transcodeRequest }] });
+        userMessageText = transcodeResult.response.text();
+        console.log(`-> Transcripción: ${userMessageText}`);
+    } else {
+        console.log(`-> Tipo ${msg.type}. Ignorando.`);
+        return;
+    }
+
+    // ========== DETECTAR RESPUESTA DE DIARIO EMOCIONAL ==========
+    if (esperandoRespuestaDiario[numeroCompleto]) {
+        console.log(`📔 Procesando respuesta de diario emocional de ${userName}`);
+        
+        const analisis = await analizarRespuestaEmocional(userMessageText);
+        
+        await guardarEntradaDiario(numeroCompleto, userMessageText, analisis);
+        
+        const personality = isUser1 ? LIRA_PERSONALITY : LUIS_PERSONALITY;
+        const promptRespuesta = `
+        ${personality}
+        ---
+        ${userName} acaba de compartir contigo cómo se siente hoy. Su respuesta fue:
+        "${userMessageText}"
+        
+        El análisis indica que se siente ${analisis.sentimiento} con una intensidad de ${analisis.intensidad}/10.
+        
+        Responde de manera empática, comprensiva y cariñosa. Valida sus emociones y ofrece apoyo.
+        `;
+        
+        const result = await generateContentWithRetry(model, promptRespuesta);
+        const respuestaEmpatica = result.response.text();
+        
+        await client.sendMessage(msg.from, respuestaEmpatica);
+        console.log(`🤖 Respuesta empática enviada a ${userName}`);
+        
+        esperandoRespuestaDiario[numeroCompleto] = false;
+        
+        const PreguntaDiariaModel = isUser1 ? PreguntaDiariaMiri : PreguntaDiariaLuis;
+        await PreguntaDiariaModel.updateOne(
+            { numero: numeroCompleto },
+            { $set: { respondioHoy: true } }
+        );
+        
+        addToHistory(numeroCompleto, 'user', userMessageText);
+        addToHistory(numeroCompleto, 'model', respuestaEmpatica);
+        
+        return;
+    }
+    // ========== FIN DE DETECCIÓN DE RESPUESTA DE DIARIO ==========
+
+    addToHistory(numeroCompleto, 'user', userMessageText);
+
+    // ROUTER
+    const historyForRouter = getHistory(numeroCompleto);
+    
+    const routerPromptText = `
+      Eres un clasificador de intenciones. Analiza el "MENSAJE NUEVO".
+      Responde SÓLO con un objeto JSON.
+      
+      Intenciones:
+      - "LISTA_AGREGAR", "LISTA_VER", "LISTA_BORRAR_ITEM", "LISTA_ELIMINAR", "LISTAS_VER_TODAS"
+      - "RECUERDA_CREAR"
+      - "RECUERDA_VER" 
+      - "RECUERDA_ELIMINAR" 
+      - "BORRAR_MEMORIA"
+      - "DIARIO_VER_ENTRADAS"
+      - "DIARIO_VER_RESUMEN"
+      - "CHAT"
+      
+      Ejemplos:
+      "añade leche al super" -> {"intent": "LISTA_AGREGAR", "nombreLista": "super", "item": "leche"}
+      
+      // Ejemplos de Recordatorios
+      "recuérdame que mañana tengo cita a las 10am" -> {"intent": "RECUERDA_CREAR", "que": "tengo cita", "cuando": "mañana a las 10am"}
+      "recuérdame tomar mis pastillas todos los dias a las 8 am y las 8 pm" -> {"intent": "RECUERDA_CREAR", "que": "tomar mis pastillas", "cuando": "todos los dias a las 8 am y las 8 pm"}
+      
+      "¿qué recordatorios tengo?" -> {"intent": "RECUERDA_VER"}
+      "enséñame mis pendientes" -> {"intent": "RECUERDA_VER"}
+      "cancela el recordatorio de las pastillas" -> {"intent": "RECUERDA_ELIMINAR", "que": "pastillas"}
+      "borra el recordatorio de la junta" -> {"intent": "RECUERDA_ELIMINAR", "que": "junta"}
+      "borra todos mis recordatorios" -> {"intent": "RECUERDA_ELIMINAR", "que": "todos"}
+      
+      // Ejemplos de Diario Emocional
+      "muéstrame mi diario" -> {"intent": "DIARIO_VER_ENTRADAS"}
+      "¿qué escribí en mi diario esta semana?" -> {"intent": "DIARIO_VER_ENTRADAS"}
+      "dame el resumen de mi semana" -> {"intent": "DIARIO_VER_RESUMEN"}
+      "¿cómo me sentí esta semana?" -> {"intent": "DIARIO_VER_RESUMEN"}
+      
+      "olvida lo que hablamos" -> {"intent": "BORRAR_MEMORIA"}
+      "hola" -> {"intent": "CHAT"}
+
+      nota: considera eufemismos como "medio dia" (12 pm)
+
+      ---
+      HISTORIAL DE CONTEXTO (para ayudarte a entender el mensaje nuevo):
+      ${historyForRouter.slice(0, -1).map(h => `${h.role}: ${h.parts[0].text}`).join('\n')}
+      ---
+      MENSAJE NUEVO:
+      "${userMessageText}"
+      ---
+      JSON:
+    `;
+
+    console.log(`💬 Clasificando intención para ${userName} (con historial)...`);
+    const result = await generateContentWithRetry(model, routerPromptText);
+    const action = cleanGeminiJson(result.response.text());
+    console.log(`🤖 Acción decidida por Gemini para ${userName}:`, action);
+
+    let responseText = "";
+
+    // SWITCH DE ACCIONES
+    switch (action.intent) {
+        
+        case "BORRAR_MEMORIA":
+            clearHistory(numeroCompleto);
+            responseText = "¡Listo! Empecemos de cero. ¿De qué quieres hablar?";
+            await client.sendMessage(msg.from, responseText);
+            break; 
+
+        case "LISTA_AGREGAR":
+            await ListaModel.updateOne({ numero: msg.from, nombre: action.nombreLista }, { $push: { items: action.item } }, { upsert: true });
+            responseText = `"${action.item}" añadido a tu lista "${action.nombreLista}".`;
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
             
-            case "RECUERDA_ELIMINAR":
-                const queBorrar = action.que;
-                
-                if (!queBorrar) {
-                    responseText = "No me dijiste qué recordatorio borrar. Puedes decirme, por ejemplo, 'cancela el recordatorio de las pastillas'.";
-                    await client.sendMessage(msg.from, responseText);
-                    addToHistory(numeroCompleto, 'model', responseText);
-                    break;
-                }
-                
-                let deleteResult;
-                
-                if (queBorrar.toLowerCase() === 'todos') {
-                    deleteResult = await RecordatorioModel.deleteMany({ numero: msg.from });
-                    responseText = `¡Listo! He borrado todos tus ${deleteResult.deletedCount} recordatorio(s).`;
-                
-                } else {
-                    deleteResult = await RecordatorioModel.deleteMany({
-                        numero: msg.from,
-                        texto: { $regex: queBorrar, $options: 'i' }
+        case "LISTA_VER":
+            const lista = await ListaModel.findOne({ numero: msg.from, nombre: action.nombreLista });
+            if (lista && lista.items && lista.items.length > 0) {
+                responseText = `📝 Tu lista "${action.nombreLista}":\n${lista.items.map((it, i) => `${i + 1}. ${it}`).join('\n')}`;
+            } else { responseText = `Tu lista "${action.nombreLista}" está vacía o no existe.`; }
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+            
+        case "LISTA_BORRAR_ITEM":
+            await ListaModel.updateOne({ numero: msg.from, nombre: action.nombreLista }, { $pull: { items: action.item } });
+            responseText = `"${action.item}" borrado de la lista "${action.nombreLista}".`;
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+            
+        case "LISTA_ELIMINAR":
+            await ListaModel.deleteOne({ numero: msg.from, nombre: action.nombreLista });
+            responseText = `Lista "${action.nombreLista}" eliminada por completo.`;
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+            
+        case "LISTAS_VER_TODAS":
+            const todas = await ListaModel.distinct("nombre", { numero: msg.from });
+            if (todas.length > 0) {
+                responseText = `Tus listas activas:\n- ${todas.join('\n- ')}`;
+            } else { responseText = "No tienes ninguna lista creada."; }
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+
+        // ========== RECUERDA_CREAR ==========
+        case "RECUERDA_CREAR":
+            const que = action.que;
+            const cuando = action.cuando;
+            
+            if (!que || !cuando) {
+                responseText = "No entendí bien tu recordatorio. Necesito saber *qué* quieres que te recuerde y *cuándo*.";
+                await client.sendMessage(msg.from, responseText);
+                addToHistory(numeroCompleto, 'model', responseText);
+                break;
+            }
+
+            console.log(`⏰ Creando recordatorio: "${que}" para "${cuando}"`);
+            
+            const isRecurring = /todos los d[ií]as?|cada d[ií]a|diario|diariamente|cada (lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)|semanalmente|cada semana/i.test(cuando);
+            
+            const resultadoParseo = parsearFechaConZonaHoraria(cuando);
+            
+            if (!resultadoParseo) {
+                responseText = `No entendí la fecha para tu recordatorio: "${cuando}". ¿Podrías ser más específica?`;
+                await client.sendMessage(msg.from, responseText);
+                addToHistory(numeroCompleto, 'model', responseText);
+                break;
+            }
+            
+            const { fecha, hora, minuto, textoOriginal } = resultadoParseo;
+            
+            await RecordatorioModel.create({
+                numero: msg.from,
+                texto: que,
+                fecha: fecha,
+                enviado: false,
+                isRecurring: isRecurring,
+                recurrenceRuleText: isRecurring ? textoOriginal : null,
+                horaOriginal: hora,
+                minutoOriginal: minuto
+            });
+            
+            const fechaLocal = fecha.toLocaleString('es-MX', { 
+                timeZone: 'America/Mexico_City', 
+                dateStyle: 'medium', 
+                timeStyle: 'short' 
+            });
+            
+            responseText = `¡Anotado! Te recordaré "${que}" el ${fechaLocal}`;
+            
+            if (isRecurring) {
+                responseText += `\n(Lo programaré recurrentemente ^^)`;
+            }
+            
+            console.log(`✅ Recordatorio creado: ${que} -> ${fechaLocal} (UTC: ${fecha.toISOString()})`);
+            
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+
+        case "RECUERDA_VER":
+            const pendientes = await RecordatorioModel.find({ numero: msg.from, enviado: false }).sort({ fecha: 1 });
+            
+            if (pendientes.length === 0) {
+                responseText = "No tienes ningún recordatorio pendiente. ^^";
+            } else {
+                const listaRecordatorios = pendientes.map((r, i) => {
+                    const fechaLocal = r.fecha.toLocaleString('es-MX', { 
+                        timeZone: 'America/Mexico_City', 
+                        dateStyle: 'full', 
+                        timeStyle: 'short' 
                     });
-                    
-                    if (deleteResult.deletedCount > 0) {
-                        responseText = `¡Listo! He borrado ${deleteResult.deletedCount} recordatorio(s) que coincidían con "${queBorrar}".`;
-                    } else {
-                        responseText = `No encontré ningún recordatorio que coincidiera con "${queBorrar}" para borrar.`;
+                    let linea = `${i + 1}. "${r.texto}"\n    └─ ${fechaLocal}`;
+                    if (r.isRecurring) {
+                        linea += " (recurrente)";
                     }
-                }
+                    return linea;
+                }).join('\n\n');
                 
-                console.log(`Recordatorios borrados para ${userName}: ${deleteResult.deletedCount}`);
+                responseText = `Claro que si!! Estos son tus recordatorios pendientes: ⏰\n\n${listaRecordatorios}`;
+            }
+            
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+        
+        case "RECUERDA_ELIMINAR":
+            const queBorrar = action.que;
+            
+            if (!queBorrar) {
+                responseText = "No me dijiste qué recordatorio borrar. Puedes decirme, por ejemplo, 'cancela el recordatorio de las pastillas'.";
                 await client.sendMessage(msg.from, responseText);
                 addToHistory(numeroCompleto, 'model', responseText);
                 break;
-
-            // ========== NUEVO: CASOS DE DIARIO EMOCIONAL ==========
-            case "DIARIO_VER_ENTRADAS":
-                const DiarioModel = isUser1 ? DiarioMiri : DiarioLuis;
-                
-                // Obtener últimas 10 entradas
-                const entradas = await DiarioModel.find({ 
-                    numero: numeroCompleto,
-                    respuesta: { $not: { $regex: /^RESUMEN_ENVIADO_/ } }
-                })
-                .sort({ fecha: -1 })
-                .limit(10);
-                
-                if (entradas.length === 0) {
-                    responseText = "Aún no tienes entradas en tu diario emocional. 📔";
-                } else {
-                    const listaEntradas = entradas.map((e, i) => {
-                        const fechaLocal = e.fecha.toLocaleString('es-MX', { 
-                            timeZone: 'America/Mexico_City', 
-                            dateStyle: 'medium', 
-                            timeStyle: 'short' 
-                        });
-                        return `${i + 1}. *${fechaLocal}*\n   ${e.sentimiento} (${e.intensidad}/10)\n   "${e.respuesta}"`;
-                    }).join('\n\n');
-                    
-                    responseText = `📔 *Tus últimas entradas de diario:*\n\n${listaEntradas}`;
-                }
-                
-                await client.sendMessage(msg.from, responseText);
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
-
-            case "DIARIO_VER_RESUMEN":
-                await generarResumenSemanal(numeroCompleto, userName);
-                responseText = "Te acabo de enviar tu resumen semanal. 💙";
-                addToHistory(numeroCompleto, 'model', responseText);
-                break;
-            // ========== FIN DE CASOS DE DIARIO EMOCIONAL ==========
-
-            case "CHAT":
-            default:
-                const chatModelToUse = isUser1 ? liraChatModel : luisChatModel;
-                const userHistory = getHistory(numeroCompleto);
-
-                console.log(`💬 Enviando a ${userName} (chat con historial de ${userHistory.length} mensajes)...`);
-                
-                const chat = chatModelToUse.startChat({
-                    history: userHistory.slice(0, -1),
+            }
+            
+            let deleteResult;
+            
+            if (queBorrar.toLowerCase() === 'todos') {
+                deleteResult = await RecordatorioModel.deleteMany({ numero: msg.from });
+                responseText = `¡Listo! He borrado todos tus ${deleteResult.deletedCount} recordatorio(s).`;
+            
+            } else {
+                deleteResult = await RecordatorioModel.deleteMany({
+                    numero: msg.from,
+                    texto: { $regex: queBorrar, $options: 'i' }
                 });
                 
-                const chatResult = await sendChatWithRetry(chat, userMessageText);
-                responseText = chatResult.response.text();
-                
-                console.log(`🤖 Respuesta de ${userName}: ${responseText}`);
-                await client.sendMessage(msg.from, responseText);
-                
-                addToHistory(numeroCompleto, 'model', responseText);
-        }
+                if (deleteResult.deletedCount > 0) {
+                    responseText = `¡Listo! He borrado ${deleteResult.deletedCount} recordatorio(s) que coincidían con "${queBorrar}".`;
+                } else {
+                    responseText = `No encontré ningún recordatorio que coincidiera con "${queBorrar}" para borrar.`;
+                }
+            }
+            
+            console.log(`Recordatorios borrados para ${userName}: ${deleteResult.deletedCount}`);
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
 
-    } catch (error) {
-        console.error("❌ Error procesando el mensaje:", error);
-        if (msg && msg.from) {
-            await client.sendMessage(msg.from, "Ups... estoy teniendo algunos problemas internos, porfi informa a luis TT.");
-        }
+        // ========== CASOS DE DIARIO EMOCIONAL ==========
+        case "DIARIO_VER_ENTRADAS":
+            const DiarioModel = isUser1 ? DiarioMiri : DiarioLuis;
+            
+            const entradas = await DiarioModel.find({ 
+                numero: numeroCompleto,
+                respuesta: { $not: { $regex: /^RESUMEN_ENVIADO_/ } }
+            })
+            .sort({ fecha: -1 })
+            .limit(10);
+            
+            if (entradas.length === 0) {
+                responseText = "Aún no tienes entradas en tu diario emocional. 📔";
+            } else {
+                const listaEntradas = entradas.map((e, i) => {
+                    const fechaLocal = e.fecha.toLocaleString('es-MX', { 
+                        timeZone: 'America/Mexico_City', 
+                        dateStyle: 'medium', 
+                        timeStyle: 'short' 
+                    });
+                    return `${i + 1}. *${fechaLocal}*\n   ${e.sentimiento} (${e.intensidad}/10)\n   "${e.respuesta}"`;
+                }).join('\n\n');
+                
+                responseText = `📔 *Tus últimas entradas de diario:*\n\n${listaEntradas}`;
+            }
+            
+            await client.sendMessage(msg.from, responseText);
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+
+        case "DIARIO_VER_RESUMEN":
+            await generarResumenSemanal(numeroCompleto, userName);
+            responseText = "Te acabo de enviar tu resumen semanal. 💙";
+            addToHistory(numeroCompleto, 'model', responseText);
+            break;
+        // ========== FIN DE CASOS DE DIARIO EMOCIONAL ==========
+
+        case "CHAT":
+        default:
+            const chatModelToUse = isUser1 ? liraChatModel : luisChatModel;
+            const userHistory = getHistory(numeroCompleto);
+
+            console.log(`💬 Enviando a ${userName} (chat con historial de ${userHistory.length} mensajes)...`);
+            
+            const chat = chatModelToUse.startChat({
+                history: userHistory.slice(0, -1),
+            });
+            
+            const chatResult = await sendChatWithRetry(chat, userMessageText);
+            responseText = chatResult.response.text();
+            
+            console.log(`🤖 Respuesta de ${userName}: ${responseText}`);
+            await client.sendMessage(msg.from, responseText);
+            
+            addToHistory(numeroCompleto, 'model', responseText);
     }
-});
 
-// --- Función principal ---
-async function startServer() {
-    try {
-        console.log("Conectando a MongoDB (con Mongoose)...");
-        await mongoose.connect(MONGO_URI, { dbName: dbName });
-        console.log("✅ Conectado a MongoDB (con Mongoose)");
-
-        console.log("Iniciando cliente de WhatsApp (con RemoteAuth)...");
-        await client.initialize();
-
-        console.log("⏰ Iniciando el 'ticker' de fondo (cada 60s)...");
-        await checkProactiveMessage();
-        setInterval(backgroundTicker, 60000);
-
-        app.listen(port, () => {
-            console.log(`🚀 Servidor Express corriendo en http://localhost:${port}`);
-        });
-
-    } catch (error) {
-        console.error("❌ Error fatal al iniciar:", error);
-        process.exit(1);
+} catch (error) {
+    console.error("❌ Error procesando el mensaje:", error);
+    if (msg && msg.from) {
+        await client.sendMessage(msg.from, "Ups... estoy teniendo algunos problemas internos, porfi informa a luis TT.");
     }
 }
+});
+// --- Función principal ---
+async function startServer() {
+try {
+console.log("Conectando a MongoDB (con Mongoose)...");
+await mongoose.connect(MONGO_URI, { dbName: dbName });
+console.log("✅ Conectado a MongoDB (con Mongoose)");
+    console.log("Iniciando cliente de WhatsApp (con RemoteAuth)...");
+    await client.initialize();
 
+    // NUEVO: Esperar a que el cliente esté listo antes de iniciar el ticker
+    console.log("⏳ Esperando a que el cliente de WhatsApp esté listo...");
+    await new Promise((resolve) => {
+        if (clientReady) {
+            resolve();
+        } else {
+            client.once('ready', resolve);
+        }
+    });
+    
+    console.log("⏰ Iniciando el 'ticker' de fondo (cada 60s)...");
+    await checkProactiveMessage();
+    setInterval(backgroundTicker, 60000);
+
+    app.listen(port, () => {
+        console.log(`🚀 Servidor Express corriendo en http://localhost:${port}`);
+    });
+
+} catch (error) {
+    console.error("❌ Error fatal al iniciar:", error);
+    process.exit(1);
+}
+}
 // --- Cierre elegante ---
 process.on('SIGINT', async () => {
-    console.log("Cerrando conexiones...");
-    await mongoose.connection.close();
-    if (client) {
-        await client.destroy();
-    }
-    process.exit(0);
+console.log("Cerrando conexiones...");
+clientReady = false;
+await mongoose.connection.close();
+if (client) {
+await client.destroy();
+}
+process.exit(0);
 });
-
 startServer();
