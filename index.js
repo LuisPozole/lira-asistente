@@ -1258,35 +1258,40 @@ const numeroLimpio = numeroCompleto.replace('@c.us', '');
 });
 // --- Función principal ---
 async function startServer() {
-try {
-console.log("Conectando a MongoDB (con Mongoose)...");
-await mongoose.connect(MONGO_URI, { dbName: dbName });
-console.log("✅ Conectado a MongoDB (con Mongoose)");
-    console.log("Iniciando cliente de WhatsApp (con RemoteAuth)...");
-    await client.initialize();
+    try {
+        console.log("Conectando a MongoDB (con Mongoose)...");
+        await mongoose.connect(MONGO_URI, { dbName: dbName });
+        console.log("✅ Conectado a MongoDB (con Mongoose)");
 
-    // NUEVO: Esperar a que el cliente esté listo antes de iniciar el ticker
-    console.log("⏳ Esperando a que el cliente de WhatsApp esté listo...");
-    await new Promise((resolve) => {
-        if (clientReady) {
-            resolve();
-        } else {
-            client.once('ready', resolve);
-        }
-    });
-    
-    console.log("⏰ Iniciando el 'ticker' de fondo (cada 60s)...");
-    await checkProactiveMessage();
-    setInterval(backgroundTicker, 60000);
+        console.log("Iniciando cliente de WhatsApp (con RemoteAuth)...");
+        client.initialize();
 
-    app.listen(port, () => {
-        console.log(`🚀 Servidor Express corriendo en http://localhost:${port}`);
-    });
+        // CORREGIDO: Iniciar el servidor Express primero
+        app.listen(port, () => {
+            console.log(`🚀 Servidor Express corriendo en http://localhost:${port}`);
+        });
 
-} catch (error) {
-    console.error("❌ Error fatal al iniciar:", error);
-    process.exit(1);
-}
+        // CORREGIDO: Esperar a que el cliente esté listo antes de hacer CUALQUIER cosa
+        console.log("⏳ Esperando a que el cliente de WhatsApp esté listo...");
+        await new Promise((resolve) => {
+            if (clientReady) {
+                resolve();
+            } else {
+                client.once('ready', resolve);
+            }
+        });
+        
+        console.log("✅ Cliente de WhatsApp listo!");
+        
+        // CORREGIDO: Solo después de que esté listo, iniciar tareas de fondo
+        console.log("⏰ Iniciando el 'ticker' de fondo (cada 60s)...");
+        await checkProactiveMessage();
+        setInterval(backgroundTicker, 60000);
+
+    } catch (error) {
+        console.error("❌ Error fatal al iniciar:", error);
+        process.exit(1);
+    }
 }
 // --- Cierre elegante ---
 process.on('SIGINT', async () => {
