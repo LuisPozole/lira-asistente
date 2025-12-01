@@ -715,7 +715,7 @@ async function checkReminders() {
     if (!clientReady) return; // NUEVO: No ejecutar si el cliente no está listo
 
     try {
-        constahora = new Date();
+        const ahora = new Date();
     const pendientesMiri = await Recordatorios.find({ fecha: { $lte: ahora }, enviado: false });
     const pendientesLuis = await LuisRecordatorios.find({ fecha: { $lte: ahora }, enviado: false });
     
