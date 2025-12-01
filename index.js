@@ -806,7 +806,7 @@ const state = await DailyMessageState.findOneAndUpdate(
 );
 state.nextScheduledTime = getRandomTimeTomorrow();
 await state.save();
-console.log(💌 Próximo mensaje proactivo (para Miri) programado para: ${state.nextScheduledTime.toLocaleString('es-MX')});
+console.log(`💌 Próximo mensaje proactivo (para Miri) programado para: ${state.nextScheduledTime.toLocaleString('es-MX')}`);
 }
 async function checkProactiveMessage() {
 if (!clientReady) return; // NUEVO: No ejecutar si el cliente no está listo
